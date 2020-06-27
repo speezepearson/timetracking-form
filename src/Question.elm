@@ -3,10 +3,12 @@ module Question exposing
     )
 
 import Browser
+import Browser.Dom
 import Html as H exposing (Html)
 import Html.Attributes as HA
 import Html.Events as HE
 import Json.Decode as JD
+import Task
 
 import Dict exposing (Dict)
 import Set exposing (Set)
@@ -96,9 +98,9 @@ type Msg
     | Backward
     | Ignore
 
-init : Model
-init =
-    { focus = Z.fromTree <| T.tree
+init : () -> ( Model , Cmd Msg )
+init () =
+  ( { focus = Z.fromTree <| T.tree
         { question = areYouAwake
         , isFollowup = (\checked {prompt} ->
             if Set.member "no" checked then
@@ -110,21 +112,32 @@ init =
         [ T.singleton { question = whoAreYouWith , isFollowup = (\_ _ -> False) }
         ]
     }
+  , Task.attempt
+      (always Ignore)
+      (Browser.Dom.focus "shortcut-input")
+  )
 
-update : Msg -> Model -> Model
+update : Msg -> Model -> ( Model , Cmd Msg)
 update msg model =
     case msg of
         ToggleChecked option ->
-            { model | focus = model.focus |> Z.mapLabel (\n -> {n | question = n.question |> toggle option}) }
-            |> (\m -> Debug.log ("got ToggleChecked; qt is " ++ Debug.toString (toQuestionTree (Z.toTree m.focus))) m)
+            ( { model | focus = model.focus |> Z.mapLabel (\n -> {n | question = n.question |> toggle option}) }
+            , Cmd.none
+            )
         Focus focus ->
-            { model | focus = focus |> Debug.log ("focusing on " ++ Debug.toString (Z.label focus)) }
+            ( { model | focus = focus |> Debug.log ("focusing on " ++ Debug.toString (Z.label focus)) }
+            , Cmd.none
+            )
         Forward ->
-            { model | focus = nextRelevant model.focus |> Maybe.withDefault model.focus }
+            ( { model | focus = nextRelevant model.focus |> Maybe.withDefault model.focus }
+            , Cmd.none
+            )
         Backward ->
-            { model | focus = prevRelevant model.focus |> Maybe.withDefault model.focus }
+            ( { model | focus = prevRelevant model.focus |> Maybe.withDefault model.focus }
+            , Cmd.none
+            )
         Ignore ->
-            model
+            ( model , Cmd.none )
 
 isRelevant : Zipper Node -> Bool
 isRelevant zipper =
@@ -238,13 +251,16 @@ viewActiveQuestion question =
         , H.input
             [ HE.on "keydown" (JD.map onKeydown <| JD.field "key" JD.string)
             , HA.value ""
+            , HA.id "shortcut-input"
+            , HA.placeholder "shortcuts or arrow keys..."
             ]
             []
         ]
 
 
-main = Browser.sandbox
+main = Browser.element
     { init = init
     , view = view
     , update = update
+    , subscriptions = (\_ -> Sub.none)
     }
