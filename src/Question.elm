@@ -6,7 +6,9 @@ import Browser
 import Html as H exposing (Html)
 import Html.Attributes as HA
 import Html.Events as HE
+import Json.Decode as JD
 
+import Dict exposing (Dict)
 import Set exposing (Set)
 import Tree as T exposing (Tree)
 import Tree.Zipper as Z exposing (Zipper)
@@ -90,6 +92,9 @@ type alias Model =
 type Msg
     = ToggleChecked Option
     | Focus (Zipper Node)
+    | Forward
+    | Backward
+    | Ignore
 
 init : Model
 init =
@@ -114,12 +119,12 @@ update msg model =
             |> (\m -> Debug.log ("got ToggleChecked; qt is " ++ Debug.toString (toQuestionTree (Z.toTree m.focus))) m)
         Focus focus ->
             { model | focus = focus |> Debug.log ("focusing on " ++ Debug.toString (Z.label focus)) }
-
-iterateUntilNothing : (a -> Maybe a) -> Maybe a -> List a
-iterateUntilNothing f mx =
-    case mx of
-        Nothing -> []
-        Just x -> x :: iterateUntilNothing f (f x)
+        Forward ->
+            { model | focus = nextRelevant model.focus |> Maybe.withDefault model.focus }
+        Backward ->
+            { model | focus = prevRelevant model.focus |> Maybe.withDefault model.focus }
+        Ignore ->
+            model
 
 isRelevant : Zipper Node -> Bool
 isRelevant zipper =
@@ -132,26 +137,41 @@ isRelevant zipper =
             in
                 isFollowup question.checked (Z.label zipper).question && isRelevant parent
 
+nextRelevant : Zipper Node -> Maybe (Zipper Node)
+nextRelevant zipper =
+    case Z.forward zipper of
+        Nothing -> Nothing
+        Just next ->
+            if isRelevant next then
+                Just next
+            else
+                nextRelevant next
+
+prevRelevant : Zipper Node -> Maybe (Zipper Node)
+prevRelevant zipper =
+    case Z.backward zipper of
+        Nothing -> Nothing
+        Just next ->
+            if isRelevant next then
+                Just next
+            else
+                nextRelevant next
+
 relevantPredecessors : Zipper Node -> List (Zipper Node)
 relevantPredecessors zipper =
-    iterateUntilNothing
-        Z.backward
-        (Z.backward zipper)
-    |> List.filter isRelevant
+    case prevRelevant zipper of
+        Nothing -> []
+        Just prev -> prev :: relevantPredecessors prev
 
 relevantSuccessors : Zipper Node -> List (Zipper Node)
 relevantSuccessors zipper =
-    iterateUntilNothing
-        Z.forward
-        (Z.forward zipper)
-    |> List.filter isRelevant
+    case nextRelevant zipper of
+        Nothing -> []
+        Just next -> next :: relevantSuccessors next
 
 view : Model -> Html Msg
 view {focus} =
     let
-        root : Form
-        root = Z.tree (Z.root focus)
-
         _ = Debug.log "focus" (Z.label focus)
         _ = Debug.log "forward" (Z.forward focus |> Maybe.map Z.label)
 
@@ -160,7 +180,7 @@ view {focus} =
         _ = Debug.log "next" (List.map (Z.label >> .question >> .prompt) next)
     in
         H.div []
-            [ viewActiveQuestion True (Z.label focus).question
+            [ viewActiveQuestion (Z.label focus).question
             , H.div [HA.style "display" "flex"]
                 [ prev
                     |> List.map (\q -> H.li [] [viewLinkToQuestion q])
@@ -175,19 +195,51 @@ viewLinkToQuestion : Zipper Node -> Html Msg
 viewLinkToQuestion zipper =
     H.button [HE.onClick (Focus zipper)] [H.text (Z.label zipper).question.prompt]
 
-viewActiveQuestion : Bool -> IsolatedQuestion -> Html Msg
-viewActiveQuestion interactive question =
+viewActiveQuestion : IsolatedQuestion -> Html Msg
+viewActiveQuestion question =
+    let
+        optionToShortcut : Dict Option String
+        optionToShortcut =
+            Dict.fromList <| List.map2 Tuple.pair
+                question.allOptions
+                (String.split "" "abcdefghijklmnopqrstuvwxyz")
+
+        shortcutToOption : Dict String Option
+        shortcutToOption =
+            optionToShortcut
+            |> Dict.toList
+            |> List.map (\(o,s) -> (s,o))
+            |> Dict.fromList
+
+        onKeydown : String -> Msg
+        onKeydown key =
+            if (Debug.log "key" key) == "ArrowLeft" then
+                Backward
+            else if key == "ArrowRight" then
+                Forward
+            else
+                Dict.get key shortcutToOption |> Maybe.map ToggleChecked |> Maybe.withDefault Ignore
+
+    in
     H.div []
         [ H.text question.prompt
         , question.allOptions
           |> List.map (\option -> H.button
                 [ HA.style "outline" (if Set.member option question.checked then "3px solid green" else "")
                 , HE.onClick (ToggleChecked option)
-                , HA.disabled (not interactive)
                 ]
-                [H.text option]
+                [ case Dict.get option optionToShortcut of
+                    Nothing -> H.text ""
+                    Just shortcut -> H.strong [] [ H.text <| "(" ++ shortcut ++ ") "]
+                , H.text option
+                ]
             )
           |> H.div []
+        , H.input
+            [ HE.on "keydown" (JD.map onKeydown <| JD.field "key" JD.string)
+            , HA.value ""
+            ]
+            []
         ]
 
 
