@@ -194,13 +194,20 @@ view {focus} =
     in
         H.div []
             [ viewActiveQuestion (Z.label focus).question
+            , H.hr [] []
             , H.div [HA.style "display" "flex"]
-                [ prev
-                    |> List.map (\q -> H.li [] [viewLinkToQuestion q])
-                    |> H.ul [HA.style "width" "50%"]
-                , next
-                    |> List.map (\q -> H.li [] [viewLinkToQuestion q])
-                    |> H.ul [HA.style "width" "50%"]
+                [ H.div [HA.style "width" "50%"]
+                    [ H.text "Previous questions:"
+                    , prev
+                      |> List.map (\q -> H.li [] [viewLinkToQuestion q])
+                      |> H.ul [HA.style "width" "50%"]
+                    ]
+                , H.div [HA.style "width" "50%"]
+                    [ H.text "Upcoming questions:"
+                    , next
+                      |> List.map (\q -> H.li [] [viewLinkToQuestion q])
+                      |> H.ul [HA.style "width" "50%"]
+                    ]
                 ]
             ]
 
@@ -224,11 +231,11 @@ viewActiveQuestion question =
             |> List.map (\(o,s) -> (s,o))
             |> Dict.fromList
 
-        onKeydown : String -> Msg
-        onKeydown key =
-            if (Debug.log "key" key) == "ArrowLeft" then
+        onKeydown : { shift : Bool , key : String } -> Msg
+        onKeydown {shift, key} =
+            if key == "ArrowLeft" || (shift && key == "Enter") then
                 Backward
-            else if key == "ArrowRight" then
+            else if key == "ArrowRight" || (not shift && key == "Enter") then
                 Forward
             else
                 Dict.get key shortcutToOption |> Maybe.map ToggleChecked |> Maybe.withDefault Ignore
@@ -249,7 +256,7 @@ viewActiveQuestion question =
             )
           |> H.div []
         , H.input
-            [ HE.on "keydown" (JD.map onKeydown <| JD.field "key" JD.string)
+            [ HE.on "keydown" (JD.map2 (\shift key -> onKeydown {shift=shift,key=key}) (JD.field "shiftKey" JD.bool) (JD.field "key" JD.string))
             , HA.value ""
             , HA.id "shortcut-input"
             , HA.placeholder "shortcuts or arrow keys..."
