@@ -123,6 +123,17 @@ isFollowupRelevant node followupPrompt =
       |> Set.member followupPrompt
 
 
+pruneIrrelevant : Tree Node -> Tree Node
+pruneIrrelevant tree =
+  let
+    root = T.label tree
+  in
+    tree |> T.mapChildren (
+      List.filter (T.label >> prompt >> isFollowupRelevant root)
+      >> List.map pruneIrrelevant
+    )
+
+
 type alias Model =
     { focus : Zipper Node
     }
