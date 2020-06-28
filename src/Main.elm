@@ -8,6 +8,7 @@ import Html as H exposing (Html)
 import Html.Attributes as HA
 import Html.Events as HE
 import Json.Decode as JD
+import Json.Encode as JE
 import Task
 
 import Dict exposing (Dict)
@@ -24,16 +25,66 @@ type Node
     { prompt : Prompt
     , allOptions : List Option
     , checked : Set Option
-    , relevantFollowups : Set Option -> Set Prompt
+    , ifCheckedFollowups : Dict Option (Set Prompt)
+    , ifUncheckedFollowups : Dict Option (Set Prompt)
     , addOptionField : String
+    , notes : String
     }
   | SelectOneNode
     { prompt : Prompt
     , allOptions : List Option
     , selected : Option
-    , relevantFollowups : Option -> Set Prompt
+    , followups : Dict Option (Set Prompt)
     , addOptionField : String
+    , notes : String
     }
+
+nodeEncoder : Node -> JE.Value
+nodeEncoder node =
+  case node of
+    SelectManyNode data ->
+      JE.object
+        [ ( "type", "SelectManyNode" |> JE.string )
+        , ( "prompt", data.prompt |> JE.string  )
+        , ( "allOptions", data.allOptions |> JE.list JE.string )
+        , ( "checked", data.checked |> Set.toList |> JE.list JE.string )
+        , ( "ifCheckedFollowups", data.ifCheckedFollowups |> JE.dict identity (Set.toList >> JE.list JE.string) )
+        , ( "ifUncheckedFollowups", data.ifUncheckedFollowups |> JE.dict identity (Set.toList >> JE.list JE.string) )
+        -- , ( "addOptionField", data.addOptionField )
+        , ( "notes", data.notes |> JE.string )
+        ]
+    SelectOneNode data ->
+      JE.object
+        [ ( "type", "SelectOneNode" |> JE.string )
+        , ( "prompt", data.prompt |> JE.string  )
+        , ( "allOptions", data.allOptions |> JE.list JE.string )
+        , ( "selected", data.selected |> JE.string )
+        , ( "followups", data.followups |> JE.dict identity (Set.toList >> JE.list JE.string) )
+        -- , ( "addOptionField", data.addOptionField )
+        , ( "notes", data.notes |> JE.string )
+        ]
+
+nodeDecoder : JD.Decoder Node
+nodeDecoder =
+  JD.field "type" JD.string |> JD.andThen (\type_ ->
+    if type_ == "SelectManyNode" then
+      JD.map6 (\prompt_ allOptions checked ifCheckedFollowups ifUncheckedFollowups notes -> SelectManyNode {prompt=prompt_, allOptions=allOptions, checked=checked, notes=notes, ifCheckedFollowups=ifCheckedFollowups, ifUncheckedFollowups=ifUncheckedFollowups, addOptionField=""})
+        (JD.field "prompt" JD.string)
+        (JD.field "allOptions" <| JD.list JD.string)
+        (JD.field "checked" <| (JD.list JD.string |> JD.map Set.fromList))
+        (JD.field "ifCheckedFollowups" <| JD.dict (JD.list JD.string |> JD.map Set.fromList))
+        (JD.field "ifUncheckedFollowups" <| JD.dict (JD.list JD.string |> JD.map Set.fromList))
+        (JD.field "notes" JD.string)
+    else if type_ == "SelectOneNode" then
+      JD.map5 (\prompt_ allOptions selected followups notes -> SelectOneNode {prompt=prompt_, allOptions=allOptions, selected=selected, notes=notes, followups=followups, addOptionField=""})
+        (JD.field "prompt" JD.string)
+        (JD.field "allOptions" <| JD.list JD.string)
+        (JD.field "selected" JD.string)
+        (JD.field "followups" <| JD.dict (JD.list JD.string |> JD.map Set.fromList))
+        (JD.field "notes" JD.string)
+    else
+      JD.fail ("unrecognized type: " ++ type_)
+    )
 
 prompt : Node -> Prompt
 prompt node =
@@ -44,8 +95,19 @@ prompt node =
 isFollowupRelevant : Node -> Prompt -> Bool
 isFollowupRelevant node followupPrompt =
   case node of
-    SelectManyNode {checked, relevantFollowups} -> Set.member followupPrompt (relevantFollowups checked)
-    SelectOneNode {selected, relevantFollowups} -> Set.member followupPrompt (relevantFollowups selected)
+    SelectManyNode {allOptions, checked, ifCheckedFollowups, ifUncheckedFollowups} ->
+      allOptions
+      |> List.map (\option ->
+          (if Set.member option checked then ifCheckedFollowups else ifUncheckedFollowups)
+          |> Dict.get option
+          |> Maybe.withDefault Set.empty
+        )
+      |> List.foldl Set.union Set.empty
+      |> Set.member followupPrompt
+    SelectOneNode {selected, followups} ->
+      Dict.get selected followups
+      |> Maybe.withDefault Set.empty
+      |> Set.member followupPrompt
 
 
 type alias Model =
@@ -341,7 +403,7 @@ main = Browser.element
 myTree : Tree Node
 myTree =
   T.tree
-    areYouAsleep
+    areYouAwake
     [ T.singleton whoAreYouWith
     , T.singleton areYouDoingYourJob
     ]
@@ -349,19 +411,15 @@ myTree =
 containsPrompt : Set comparable -> comparable -> Bool
 containsPrompt s x = Set.member x  s
 
-areYouAsleep : Node
-areYouAsleep =
+areYouAwake : Node
+areYouAwake =
   SelectOneNode
-    { prompt = "Are you asleep?"
+    { prompt = "Are you awake?"
     , allOptions = ["yes", "no"]
-    , selected = "no"
+    , selected = "yes"
     , addOptionField = ""
-    , relevantFollowups = (\selected ->
-        if selected == "yes" then
-          Set.empty
-        else
-          Set.fromList [prompt whoAreYouWith, prompt areYouDoingYourJob]
-      )
+    , notes = ""
+    , followups = Dict.fromList [("yes", Set.fromList [prompt whoAreYouWith, prompt areYouDoingYourJob])]
     }
 
 whoAreYouWith : Node
@@ -380,7 +438,9 @@ whoAreYouWith =
       ]
     , checked = Set.empty
     , addOptionField = ""
-    , relevantFollowups = always Set.empty
+    , notes = ""
+    , ifCheckedFollowups = Dict.empty
+    , ifUncheckedFollowups = Dict.empty
     }
 
 areYouDoingYourJob : Node
@@ -390,5 +450,6 @@ areYouDoingYourJob =
     , allOptions = ["yes", "no"]
     , selected = "no"
     , addOptionField = ""
-    , relevantFollowups = always Set.empty
+    , notes = ""
+    , followups = Dict.empty
     }
