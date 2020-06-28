@@ -233,10 +233,10 @@ myTree =
   T.tree
     { question = areYouAsleep
     , isFollowup = (\checked {prompt} ->
-      if Set.member "no" checked then
-        List.member prompt [whoAreYouWith.prompt, areYouDoingYourJob.prompt]
-      else
+      if Set.member "yes" checked then
         False
+      else
+        List.member prompt [whoAreYouWith.prompt, areYouDoingYourJob.prompt]
       )
     }
     [ T.singleton
@@ -255,20 +255,29 @@ containsPrompt s x = Set.member x  s
 areYouAsleep : IsolatedQuestion
 areYouAsleep =
     { prompt = "Are you asleep?"
-    , allOptions = ["no"]
+    , allOptions = ["yes"]
     , checked = Set.empty
     }
 
 whoAreYouWith : IsolatedQuestion
 whoAreYouWith =
     { prompt = "Who are you with?"
-    , allOptions=["Rebecca", "Yam"]
-    , checked=Set.empty
+    , allOptions = List.sort
+      [ "Rebecca"
+      , "Yam"
+      , "Ellie"
+      , "Crystal"
+      , "Justin"
+      , "Dad"
+      , "Cathy"
+      , "Florence"
+      ]
+    , checked = Set.empty
     }
 
 areYouDoingYourJob : IsolatedQuestion
 areYouDoingYourJob =
     { prompt = "Are you doing your job?"
-    , allOptions=["yes"]
-    , checked=Set.empty
+    , allOptions = ["yes"]
+    , checked = Set.empty
     }
