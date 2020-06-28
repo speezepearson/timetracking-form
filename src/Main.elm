@@ -109,8 +109,8 @@ update msg model =
         AddOption ->
             ( { model
               | focus = model.focus |> Z.mapLabel (\node -> case node of
-                  SelectManyNode data -> SelectManyNode { data | allOptions = data.allOptions ++ [data.addOptionField] , checked = data.checked |> Set.insert data.addOptionField }
-                  SelectOneNode data -> SelectOneNode { data | allOptions = data.allOptions ++ [data.addOptionField] , selected = data.addOptionField }
+                  SelectManyNode data -> SelectManyNode { data | allOptions = data.allOptions ++ [data.addOptionField] , checked = data.checked |> Set.insert data.addOptionField , addOptionField = "" }
+                  SelectOneNode data -> SelectOneNode { data | allOptions = data.allOptions ++ [data.addOptionField] , selected = data.addOptionField , addOptionField = "" }
                   -- x -> x |> Debug.log ("ignoring " ++ Debug.toString msg ++ " for non-Select*Node")
                 )
               }
