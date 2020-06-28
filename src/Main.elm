@@ -42,8 +42,8 @@ type Node
 
 -- TODO: add serialization tests
 
-nodeEncoder : Node -> JE.Value
-nodeEncoder node =
+encodeNode : Node -> JE.Value
+encodeNode node =
   case node of
     SelectManyNode data ->
       JE.object
