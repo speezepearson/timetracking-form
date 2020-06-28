@@ -20,8 +20,20 @@ type alias Option = String
 
 
 type Node
-  = SelectManyNode { prompt : Prompt , allOptions : List Option , checked : Set Option , relevantFollowups : Set Option -> Set Prompt }
-  | SelectOneNode { prompt : Prompt , allOptions : List Option , selected : Option , relevantFollowups : Option -> Set Prompt }
+  = SelectManyNode
+    { prompt : Prompt
+    , allOptions : List Option
+    , checked : Set Option
+    , relevantFollowups : Set Option -> Set Prompt
+    , addOptionField : String
+    }
+  | SelectOneNode
+    { prompt : Prompt
+    , allOptions : List Option
+    , selected : Option
+    , relevantFollowups : Option -> Set Prompt
+    , addOptionField : String
+    }
 
 prompt : Node -> Prompt
 prompt node =
@@ -43,6 +55,8 @@ type alias Model =
 type Msg
     = ToggleChecked Option
     | Select Option
+    | SetAddOptionField String
+    | AddOption
     | Focus (Zipper Node)
     | Forward
     | Backward
@@ -51,10 +65,14 @@ type Msg
 init : () -> ( Model , Cmd Msg )
 init () =
   ( { focus = Z.fromTree myTree }
-  , Task.attempt
-      (always Ignore)
-      (Browser.Dom.focus "shortcut-input")
+  , focusOnShortcuts
   )
+
+focusOnShortcuts : Cmd Msg
+focusOnShortcuts =
+  Task.attempt
+    (always Ignore)
+    (Browser.Dom.focus "shortcut-input")
 
 update : Msg -> Model -> ( Model , Cmd Msg)
 update msg model =
@@ -77,6 +95,26 @@ update msg model =
                 )
               }
             , Cmd.none
+            )
+        SetAddOptionField value ->
+            ( { model
+              | focus = model.focus |> Z.mapLabel (\node -> case node of
+                  SelectManyNode data -> SelectManyNode { data | addOptionField = value }
+                  SelectOneNode data -> SelectOneNode { data | addOptionField = value }
+                  -- x -> x |> Debug.log ("ignoring " ++ Debug.toString msg ++ " for non-Select*Node")
+                )
+              }
+            , Cmd.none
+            )
+        AddOption ->
+            ( { model
+              | focus = model.focus |> Z.mapLabel (\node -> case node of
+                  SelectManyNode data -> SelectManyNode { data | allOptions = data.allOptions ++ [data.addOptionField] , checked = data.checked |> Set.insert data.addOptionField }
+                  SelectOneNode data -> SelectOneNode { data | allOptions = data.allOptions ++ [data.addOptionField] , selected = data.addOptionField }
+                  -- x -> x |> Debug.log ("ignoring " ++ Debug.toString msg ++ " for non-Select*Node")
+                )
+              }
+            , focusOnShortcuts
             )
         Focus focus ->
             ( { model | focus = focus |> Debug.log ("focusing on " ++ Debug.toString (Z.label focus)) }
@@ -207,6 +245,16 @@ viewActiveQuestion node =
                 , H.text option
                 ]
             )
+          |> (\hs -> hs ++
+              [ H.input
+                  [ HE.onInput SetAddOptionField
+                  , HA.placeholder "add option"
+                  , HA.value data.addOptionField
+                  ]
+                  []
+              , H.button [HE.onClick AddOption] [H.text "Add"]
+              ]
+             )
           |> H.div []
         , H.input
             [ HE.on "keydown" (JD.map2 (\shift key -> onKeydown {shift=shift,key=key}) (JD.field "shiftKey" JD.bool) (JD.field "key" JD.string))
@@ -255,6 +303,17 @@ viewActiveQuestion node =
                 , H.text option
                 ]
             )
+          |> (\hs -> hs ++
+              [ H.input
+                  [ HE.onInput SetAddOptionField
+                  , HA.placeholder "add option"
+                  , HA.value data.addOptionField
+                  , HE.on "keydown" (JD.map (\key -> if key == "Enter" then AddOption else Ignore) <| JD.field "key" JD.string)
+                  ]
+                  []
+              , H.button [HE.onClick AddOption] [H.text "Add"]
+              ]
+             )
           |> H.div []
         , H.input
             [ HE.on "keydown" (JD.map2 (\shift key -> onKeydown {shift=shift,key=key}) (JD.field "shiftKey" JD.bool) (JD.field "key" JD.string))
@@ -296,6 +355,7 @@ areYouAsleep =
     { prompt = "Are you asleep?"
     , allOptions = ["yes", "no"]
     , selected = "no"
+    , addOptionField = ""
     , relevantFollowups = (\selected ->
         if selected == "yes" then
           Set.empty
@@ -319,6 +379,7 @@ whoAreYouWith =
       , "Florence"
       ]
     , checked = Set.empty
+    , addOptionField = ""
     , relevantFollowups = always Set.empty
     }
 
@@ -328,5 +389,6 @@ areYouDoingYourJob =
     { prompt = "Are you doing your job?"
     , allOptions = ["yes", "no"]
     , selected = "no"
+    , addOptionField = ""
     , relevantFollowups = always Set.empty
     }
