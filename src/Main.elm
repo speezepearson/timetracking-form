@@ -25,7 +25,7 @@ type Node
   = SelectManyNode
     { prompt : Prompt
     , allOptions : List Option
-    , checked : Set Option
+    , checked : Maybe (Set Option)
     , ifCheckedFollowups : Dict Option (Set Prompt)
     , ifUncheckedFollowups : Dict Option (Set Prompt)
     , addOptionField : String
@@ -34,7 +34,7 @@ type Node
   | SelectOneNode
     { prompt : Prompt
     , allOptions : List Option
-    , selected : Option
+    , selected : Maybe Option
     , followups : Dict Option (Set Prompt)
     , addOptionField : String
     , notes : String
@@ -50,7 +50,7 @@ nodeEncoder node =
         [ ( "type", "SelectManyNode" |> JE.string )
         , ( "prompt", data.prompt |> JE.string  )
         , ( "allOptions", data.allOptions |> JE.list JE.string )
-        , ( "checked", data.checked |> Set.toList |> JE.list JE.string )
+        , ( "checked", data.checked |> Maybe.map (Set.toList >> JE.list JE.string) |> Maybe.withDefault JE.null )
         , ( "ifCheckedFollowups", data.ifCheckedFollowups |> JE.dict identity (Set.toList >> JE.list JE.string) )
         , ( "ifUncheckedFollowups", data.ifUncheckedFollowups |> JE.dict identity (Set.toList >> JE.list JE.string) )
         -- , ( "addOptionField", data.addOptionField )
@@ -61,7 +61,7 @@ nodeEncoder node =
         [ ( "type", "SelectOneNode" |> JE.string )
         , ( "prompt", data.prompt |> JE.string  )
         , ( "allOptions", data.allOptions |> JE.list JE.string )
-        , ( "selected", data.selected |> JE.string )
+        , ( "selected", data.selected |> Maybe.map JE.string |> Maybe.withDefault JE.null )
         , ( "followups", data.followups |> JE.dict identity (Set.toList >> JE.list JE.string) )
         -- , ( "addOptionField", data.addOptionField )
         , ( "notes", data.notes |> JE.string )
@@ -74,7 +74,7 @@ nodeDecoder =
       JD.map6 (\prompt_ allOptions checked ifCheckedFollowups ifUncheckedFollowups notes -> SelectManyNode {prompt=prompt_, allOptions=allOptions, checked=checked, notes=notes, ifCheckedFollowups=ifCheckedFollowups, ifUncheckedFollowups=ifUncheckedFollowups, addOptionField=""})
         (JD.field "prompt" JD.string)
         (JD.field "allOptions" <| JD.list JD.string)
-        (JD.field "checked" <| (JD.list JD.string |> JD.map Set.fromList))
+        (JD.field "checked" <| (JD.nullable (JD.list JD.string) |> JD.map (Maybe.map Set.fromList)))
         (JD.field "ifCheckedFollowups" <| JD.dict (JD.list JD.string |> JD.map Set.fromList))
         (JD.field "ifUncheckedFollowups" <| JD.dict (JD.list JD.string |> JD.map Set.fromList))
         (JD.field "notes" JD.string)
@@ -82,7 +82,7 @@ nodeDecoder =
       JD.map5 (\prompt_ allOptions selected followups notes -> SelectOneNode {prompt=prompt_, allOptions=allOptions, selected=selected, notes=notes, followups=followups, addOptionField=""})
         (JD.field "prompt" JD.string)
         (JD.field "allOptions" <| JD.list JD.string)
-        (JD.field "selected" JD.string)
+        (JD.field "selected" <| JD.nullable JD.string)
         (JD.field "followups" <| JD.dict (JD.list JD.string |> JD.map Set.fromList))
         (JD.field "notes" JD.string)
     else
@@ -95,20 +95,30 @@ prompt node =
     SelectManyNode data -> data.prompt
     SelectOneNode data -> data.prompt
 
+isAnswered : Node -> Bool
+isAnswered node =
+  case node of
+    SelectManyNode data -> (data.checked /= Nothing)
+    SelectOneNode data -> (data.selected /= Nothing)
+
 isFollowupRelevant : Node -> Prompt -> Bool
 isFollowupRelevant node followupPrompt =
   case node of
     SelectManyNode {allOptions, checked, ifCheckedFollowups, ifUncheckedFollowups} ->
-      allOptions
-      |> List.map (\option ->
-          (if Set.member option checked then ifCheckedFollowups else ifUncheckedFollowups)
-          |> Dict.get option
-          |> Maybe.withDefault Set.empty
-        )
-      |> List.foldl Set.union Set.empty
-      |> Set.member followupPrompt
+      case checked of
+        Nothing -> False
+        Just checkedSet ->
+          allOptions
+          |> List.map (\option ->
+              (if Set.member option checkedSet then ifCheckedFollowups else ifUncheckedFollowups)
+              |> Dict.get option
+              |> Maybe.withDefault Set.empty
+            )
+          |> List.foldl Set.union Set.empty
+          |> Set.member followupPrompt
     SelectOneNode {selected, followups} ->
-      Dict.get selected followups
+      selected
+      |> Maybe.andThen (\s -> Dict.get s followups)
       |> Maybe.withDefault Set.empty
       |> Set.member followupPrompt
 
@@ -146,7 +156,7 @@ update msg model =
             ( { model
               | focus = model.focus |> Z.mapLabel (\node -> case node of
                   SelectManyNode data -> SelectManyNode
-                      { data | checked = data.checked |> if Set.member option data.checked then Set.remove option else Set.insert option }
+                      { data | checked = data.checked |> Maybe.withDefault Set.empty |> (\checked -> if Set.member option checked then Set.remove option checked else Set.insert option checked) |> Just }
                   x -> x |> Debug.log ("ignoring " ++ Debug.toString msg ++ " for non-SelectManyNode")
                 )
               }
@@ -155,7 +165,7 @@ update msg model =
         Select option ->
             ( { model
               | focus = model.focus |> Z.mapLabel (\node -> case node of
-                  SelectOneNode data -> SelectOneNode { data | selected = option }
+                  SelectOneNode data -> SelectOneNode { data | selected = Just option }
                   x -> x |> Debug.log ("ignoring " ++ Debug.toString msg ++ " for non-SelectOneNode")
                 )
               }
@@ -174,8 +184,8 @@ update msg model =
         AddOption ->
             ( { model
               | focus = model.focus |> Z.mapLabel (\node -> case node of
-                  SelectManyNode data -> SelectManyNode { data | allOptions = data.allOptions ++ [data.addOptionField] , checked = data.checked |> Set.insert data.addOptionField , addOptionField = "" }
-                  SelectOneNode data -> SelectOneNode { data | allOptions = data.allOptions ++ [data.addOptionField] , selected = data.addOptionField , addOptionField = "" }
+                  SelectManyNode data -> SelectManyNode { data | allOptions = data.allOptions ++ [data.addOptionField] , checked = data.checked |> Maybe.withDefault Set.empty |> Set.insert data.addOptionField |> Just , addOptionField = "" }
+                  SelectOneNode data -> SelectOneNode { data | allOptions = data.allOptions ++ [data.addOptionField] , selected = Just data.addOptionField , addOptionField = "" }
                   -- x -> x |> Debug.log ("ignoring " ++ Debug.toString msg ++ " for non-Select*Node")
                 )
               }
@@ -267,7 +277,22 @@ view {focus} =
 
 viewLinkToQuestion : Zipper Node -> Html Msg
 viewLinkToQuestion zipper =
-    H.button [HE.onClick (Focus zipper)] [H.text <| prompt <| Z.label zipper]
+    H.span []
+      [ H.button [HE.onClick (Focus zipper)] [H.text <| prompt <| Z.label zipper]
+      , H.text <| " " ++ summarizeAnswer (Z.label zipper)
+      ]
+
+summarizeAnswer : Node -> String
+summarizeAnswer node =
+  case node of
+    SelectManyNode data ->
+      case data.checked of
+        Nothing -> "(TODO)"
+        Just checkedSet -> checkedSet |> Set.toList |> List.sort |> String.join ", "
+    SelectOneNode data ->
+      case data.selected of
+        Nothing -> "(TODO)"
+        Just selectedStr -> selectedStr
 
 shortcuts : List String -> Dict String Char
 shortcuts =
@@ -357,7 +382,7 @@ viewActiveQuestion node =
         [ H.text (prompt node)
         , data.allOptions
           |> List.map (\option -> H.button
-                [ HA.style "outline" (if Set.member option data.checked then "3px solid green" else "")
+                [ HA.style "outline" (if Set.member option (data.checked |> Maybe.withDefault Set.empty) then "3px solid green" else "")
                 , HE.onClick (ToggleChecked option)
                 ]
                 [ case Dict.get option optionToShortcut of
@@ -415,7 +440,7 @@ viewActiveQuestion node =
         [ H.text (prompt node)
         , data.allOptions
           |> List.map (\option -> H.button
-                [ HA.style "outline" (if option == data.selected then "3px solid green" else "")
+                [ HA.style "outline" (if Just option == data.selected then "3px solid green" else "")
                 , HE.onClick (Select option)
                 ]
                 [ case Dict.get option optionToShortcut of
@@ -474,7 +499,7 @@ areYouAwake =
   SelectOneNode
     { prompt = "Are you awake?"
     , allOptions = ["yes", "no"]
-    , selected = "yes"
+    , selected = Nothing
     , addOptionField = ""
     , notes = ""
     , followups = Dict.fromList [("yes", Set.fromList [prompt whoAreYouWith, prompt areYouDoingYourJob])]
@@ -494,7 +519,7 @@ whoAreYouWith =
       , "Cathy"
       , "Florence"
       ]
-    , checked = Set.empty
+    , checked = Nothing
     , addOptionField = ""
     , notes = ""
     , ifCheckedFollowups = Dict.empty
@@ -506,7 +531,7 @@ areYouDoingYourJob =
   SelectOneNode
     { prompt = "Are you doing your job?"
     , allOptions = ["yes", "no"]
-    , selected = "no"
+    , selected = Nothing
     , addOptionField = ""
     , notes = ""
     , followups = Dict.empty
