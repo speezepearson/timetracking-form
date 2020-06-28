@@ -48,21 +48,6 @@ type alias Node =
     }
 
 
-areYouAwake : IsolatedQuestion
-areYouAwake =
-    { prompt = "Are you awake?"
-    , allOptions = ["no"]
-    , checked = Set.empty
-    }
-
-
-whoAreYouWith : IsolatedQuestion
-whoAreYouWith =
-    { prompt = "Who are you with?"
-    , allOptions=["Rebecca", "Yam"]
-    , checked=Set.empty
-    }
-
 type alias Model =
     { focus : Zipper Node
     }
@@ -76,18 +61,7 @@ type Msg
 
 init : () -> ( Model , Cmd Msg )
 init () =
-  ( { focus = Z.fromTree <| T.tree
-        { question = areYouAwake
-        , isFollowup = (\checked {prompt} ->
-            if Set.member "no" checked then
-                List.member prompt [whoAreYouWith.prompt]
-            else
-                False
-            )
-        }
-        [ T.singleton { question = whoAreYouWith , isFollowup = (\_ _ -> False) }
-        ]
-    }
+  ( { focus = Z.fromTree myTree }
   , Task.attempt
       (always Ignore)
       (Browser.Dom.focus "shortcut-input")
@@ -246,4 +220,55 @@ main = Browser.element
     , view = view
     , update = update
     , subscriptions = (\_ -> Sub.none)
+    }
+
+
+
+
+
+-- MY TREE
+
+myTree : Tree Node
+myTree =
+  T.tree
+    { question = areYouAsleep
+    , isFollowup = (\checked {prompt} ->
+      if Set.member "no" checked then
+        List.member prompt [whoAreYouWith.prompt, areYouDoingYourJob.prompt]
+      else
+        False
+      )
+    }
+    [ T.singleton
+      { question = whoAreYouWith
+      , isFollowup = (\_ _ -> False)
+      }
+    , T.singleton
+      { question = areYouDoingYourJob
+      , isFollowup = (\_ _ -> False)
+      }
+    ]
+
+containsPrompt : Set comparable -> comparable -> Bool
+containsPrompt s x = Set.member x  s
+
+areYouAsleep : IsolatedQuestion
+areYouAsleep =
+    { prompt = "Are you asleep?"
+    , allOptions = ["no"]
+    , checked = Set.empty
+    }
+
+whoAreYouWith : IsolatedQuestion
+whoAreYouWith =
+    { prompt = "Who are you with?"
+    , allOptions=["Rebecca", "Yam"]
+    , checked=Set.empty
+    }
+
+areYouDoingYourJob : IsolatedQuestion
+areYouDoingYourJob =
+    { prompt = "Are you doing your job?"
+    , allOptions=["yes"]
+    , checked=Set.empty
     }
