@@ -21,16 +21,19 @@ type alias Option = String
 
 type Node
   = SelectManyNode { prompt : Prompt , allOptions : List Option , checked : Set Option , relevantFollowups : Set Option -> Set Prompt }
+  | SelectOneNode { prompt : Prompt , allOptions : List Option , selected : Option , relevantFollowups : Option -> Set Prompt }
 
 prompt : Node -> Prompt
 prompt node =
   case node of
     SelectManyNode data -> data.prompt
+    SelectOneNode data -> data.prompt
 
 isFollowupRelevant : Node -> Prompt -> Bool
 isFollowupRelevant node followupPrompt =
   case node of
     SelectManyNode {checked, relevantFollowups} -> Set.member followupPrompt (relevantFollowups checked)
+    SelectOneNode {selected, relevantFollowups} -> Set.member followupPrompt (relevantFollowups selected)
 
 
 type alias Model =
@@ -39,6 +42,7 @@ type alias Model =
 
 type Msg
     = ToggleChecked Option
+    | Select Option
     | Focus (Zipper Node)
     | Forward
     | Backward
@@ -60,7 +64,16 @@ update msg model =
               | focus = model.focus |> Z.mapLabel (\node -> case node of
                   SelectManyNode data -> SelectManyNode
                       { data | checked = data.checked |> if Set.member option data.checked then Set.remove option else Set.insert option }
-                  -- x -> x |> Debug.log ("ignoring " ++ Debug.toString msg ++ " for non-SelectManyNode")
+                  x -> x |> Debug.log ("ignoring " ++ Debug.toString msg ++ " for non-SelectManyNode")
+                )
+              }
+            , Cmd.none
+            )
+        Select option ->
+            ( { model
+              | focus = model.focus |> Z.mapLabel (\node -> case node of
+                  SelectOneNode data -> SelectOneNode { data | selected = option }
+                  x -> x |> Debug.log ("ignoring " ++ Debug.toString msg ++ " for non-SelectOneNode")
                 )
               }
             , Cmd.none
@@ -204,6 +217,54 @@ viewActiveQuestion node =
             []
         ]
 
+    SelectOneNode data ->
+      let
+        optionToShortcut : Dict Option String
+        optionToShortcut =
+            Dict.fromList <| List.map2 Tuple.pair
+                data.allOptions
+                (String.split "" "abcdefghijklmnopqrstuvwxyz")
+
+        shortcutToOption : Dict String Option
+        shortcutToOption =
+            optionToShortcut
+            |> Dict.toList
+            |> List.map (\(o,s) -> (s,o))
+            |> Dict.fromList
+
+        onKeydown : { shift : Bool , key : String } -> Msg
+        onKeydown {shift, key} =
+            if key == "ArrowLeft" || (shift && key == "Enter") then
+                Backward
+            else if key == "ArrowRight" || (not shift && key == "Enter") then
+                Forward
+            else
+                Dict.get key shortcutToOption |> Maybe.map Select |> Maybe.withDefault Ignore
+
+      in
+      H.div []
+        [ H.text (prompt node)
+        , data.allOptions
+          |> List.map (\option -> H.button
+                [ HA.style "outline" (if option == data.selected then "3px solid green" else "")
+                , HE.onClick (Select option)
+                ]
+                [ case Dict.get option optionToShortcut of
+                    Nothing -> H.text ""
+                    Just shortcut -> H.strong [] [ H.text <| "(" ++ shortcut ++ ") "]
+                , H.text option
+                ]
+            )
+          |> H.div []
+        , H.input
+            [ HE.on "keydown" (JD.map2 (\shift key -> onKeydown {shift=shift,key=key}) (JD.field "shiftKey" JD.bool) (JD.field "key" JD.string))
+            , HA.value ""
+            , HA.id "shortcut-input"
+            , HA.placeholder "shortcuts or arrow keys..."
+            ]
+            []
+        ]
+
 
 main = Browser.element
     { init = init
@@ -231,12 +292,12 @@ containsPrompt s x = Set.member x  s
 
 areYouAsleep : Node
 areYouAsleep =
-  SelectManyNode
+  SelectOneNode
     { prompt = "Are you asleep?"
-    , allOptions = ["yes"]
-    , checked = Set.empty
-    , relevantFollowups = (\checked ->
-        if Set.member "yes" checked then
+    , allOptions = ["yes", "no"]
+    , selected = "no"
+    , relevantFollowups = (\selected ->
+        if selected == "yes" then
           Set.empty
         else
           Set.fromList [prompt whoAreYouWith, prompt areYouDoingYourJob]
@@ -263,9 +324,9 @@ whoAreYouWith =
 
 areYouDoingYourJob : Node
 areYouDoingYourJob =
-  SelectManyNode
+  SelectOneNode
     { prompt = "Are you doing your job?"
-    , allOptions = ["yes"]
-    , checked = Set.empty
+    , allOptions = ["yes", "no"]
+    , selected = "no"
     , relevantFollowups = always Set.empty
     }
