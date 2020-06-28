@@ -18,34 +18,19 @@ import Tree.Zipper as Z exposing (Zipper)
 type alias Prompt = String
 type alias Option = String
 
-type alias IsolatedQuestion =
-    { prompt : Prompt
-    , allOptions : List Option
-    , checked : Set Option
-    }
 
-check : Option -> IsolatedQuestion -> IsolatedQuestion
-check option question =
-    { question | checked = question.checked |> Set.insert option }
+type Node
+  = SelectManyNode { prompt : Prompt , allOptions : List Option , checked : Set Option , relevantFollowups : Set Option -> Set Prompt }
 
-uncheck : Option -> IsolatedQuestion -> IsolatedQuestion
-uncheck option question =
-    { question | checked = question.checked |> Set.remove option }
+prompt : Node -> Prompt
+prompt node =
+  case node of
+    SelectManyNode data -> data.prompt
 
-toggle : Option -> IsolatedQuestion -> IsolatedQuestion
-toggle option question =
-    (if Set.member option question.checked then uncheck else check) option question
-
-
-
-
-
-
-
-type alias Node =
-    { question : IsolatedQuestion
-    , isFollowup : (Set Option -> IsolatedQuestion -> Bool)
-    }
+isFollowupRelevant : Node -> Prompt -> Bool
+isFollowupRelevant node followupPrompt =
+  case node of
+    SelectManyNode {checked, relevantFollowups} -> Set.member followupPrompt (relevantFollowups checked)
 
 
 type alias Model =
@@ -71,7 +56,13 @@ update : Msg -> Model -> ( Model , Cmd Msg)
 update msg model =
     case msg of
         ToggleChecked option ->
-            ( { model | focus = model.focus |> Z.mapLabel (\n -> {n | question = n.question |> toggle option}) }
+            ( { model
+              | focus = model.focus |> Z.mapLabel (\node -> case node of
+                  SelectManyNode data -> SelectManyNode
+                      { data | checked = data.checked |> if Set.member option data.checked then Set.remove option else Set.insert option }
+                  -- x -> x |> Debug.log ("ignoring " ++ Debug.toString msg ++ " for non-SelectManyNode")
+                )
+              }
             , Cmd.none
             )
         Focus focus ->
@@ -89,23 +80,20 @@ update msg model =
         Ignore ->
             ( model , Cmd.none )
 
-isRelevant : Zipper Node -> Bool
-isRelevant zipper =
+isFocusRelevant : Zipper Node -> Bool
+isFocusRelevant zipper =
     Debug.log ("is " ++ Debug.toString (Z.label zipper) ++ " relevant?") <|
     case Z.parent zipper of
         Nothing -> True
         Just parent ->
-            let
-                {question, isFollowup} = Z.label parent
-            in
-                isFollowup question.checked (Z.label zipper).question && isRelevant parent
+          isFollowupRelevant (Z.label parent) (prompt <| Z.label zipper) && isFocusRelevant parent
 
 nextRelevant : Zipper Node -> Maybe (Zipper Node)
 nextRelevant zipper =
     case Z.forward zipper of
         Nothing -> Nothing
         Just next ->
-            if isRelevant next then
+            if isFocusRelevant next then
                 Just next
             else
                 nextRelevant next
@@ -115,7 +103,7 @@ prevRelevant zipper =
     case Z.backward zipper of
         Nothing -> Nothing
         Just next ->
-            if isRelevant next then
+            if isFocusRelevant next then
                 Just next
             else
                 nextRelevant next
@@ -140,10 +128,10 @@ view {focus} =
 
         prev = relevantPredecessors focus
         next = relevantSuccessors focus
-        _ = Debug.log "next" (List.map (Z.label >> .question >> .prompt) next)
+        _ = Debug.log "next" (List.map (Z.label >> prompt) next)
     in
         H.div []
-            [ viewActiveQuestion (Z.label focus).question
+            [ viewActiveQuestion (Z.label focus)
             , H.hr [] []
             , H.div [HA.style "display" "flex"]
                 [ H.div [HA.style "width" "50%"]
@@ -163,15 +151,17 @@ view {focus} =
 
 viewLinkToQuestion : Zipper Node -> Html Msg
 viewLinkToQuestion zipper =
-    H.button [HE.onClick (Focus zipper)] [H.text (Z.label zipper).question.prompt]
+    H.button [HE.onClick (Focus zipper)] [H.text <| prompt <| Z.label zipper]
 
-viewActiveQuestion : IsolatedQuestion -> Html Msg
-viewActiveQuestion question =
-    let
+viewActiveQuestion : Node -> Html Msg
+viewActiveQuestion node =
+  case node of
+    SelectManyNode data ->
+      let
         optionToShortcut : Dict Option String
         optionToShortcut =
             Dict.fromList <| List.map2 Tuple.pair
-                question.allOptions
+                data.allOptions
                 (String.split "" "abcdefghijklmnopqrstuvwxyz")
 
         shortcutToOption : Dict String Option
@@ -190,12 +180,12 @@ viewActiveQuestion question =
             else
                 Dict.get key shortcutToOption |> Maybe.map ToggleChecked |> Maybe.withDefault Ignore
 
-    in
-    H.div []
-        [ H.text question.prompt
-        , question.allOptions
+      in
+      H.div []
+        [ H.text (prompt node)
+        , data.allOptions
           |> List.map (\option -> H.button
-                [ HA.style "outline" (if Set.member option question.checked then "3px solid green" else "")
+                [ HA.style "outline" (if Set.member option data.checked then "3px solid green" else "")
                 , HE.onClick (ToggleChecked option)
                 ]
                 [ case Dict.get option optionToShortcut of
@@ -231,36 +221,31 @@ main = Browser.element
 myTree : Tree Node
 myTree =
   T.tree
-    { question = areYouAsleep
-    , isFollowup = (\checked {prompt} ->
-      if Set.member "yes" checked then
-        False
-      else
-        List.member prompt [whoAreYouWith.prompt, areYouDoingYourJob.prompt]
-      )
-    }
-    [ T.singleton
-      { question = whoAreYouWith
-      , isFollowup = (\_ _ -> False)
-      }
-    , T.singleton
-      { question = areYouDoingYourJob
-      , isFollowup = (\_ _ -> False)
-      }
+    areYouAsleep
+    [ T.singleton whoAreYouWith
+    , T.singleton areYouDoingYourJob
     ]
 
 containsPrompt : Set comparable -> comparable -> Bool
 containsPrompt s x = Set.member x  s
 
-areYouAsleep : IsolatedQuestion
+areYouAsleep : Node
 areYouAsleep =
+  SelectManyNode
     { prompt = "Are you asleep?"
     , allOptions = ["yes"]
     , checked = Set.empty
+    , relevantFollowups = (\checked ->
+        if Set.member "yes" checked then
+          Set.empty
+        else
+          Set.fromList [prompt whoAreYouWith, prompt areYouDoingYourJob]
+      )
     }
 
-whoAreYouWith : IsolatedQuestion
+whoAreYouWith : Node
 whoAreYouWith =
+  SelectManyNode
     { prompt = "Who are you with?"
     , allOptions = List.sort
       [ "Rebecca"
@@ -273,11 +258,14 @@ whoAreYouWith =
       , "Florence"
       ]
     , checked = Set.empty
+    , relevantFollowups = always Set.empty
     }
 
-areYouDoingYourJob : IsolatedQuestion
+areYouDoingYourJob : Node
 areYouDoingYourJob =
+  SelectManyNode
     { prompt = "Are you doing your job?"
     , allOptions = ["yes"]
     , checked = Set.empty
+    , relevantFollowups = always Set.empty
     }
