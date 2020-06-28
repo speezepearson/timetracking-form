@@ -12,6 +12,7 @@ import Json.Encode as JE
 import Task
 
 import Dict exposing (Dict)
+import List.Extra
 import Set exposing (Set)
 import Tree as T exposing (Tree)
 import Tree.Zipper as Z exposing (Zipper)
@@ -38,6 +39,8 @@ type Node
     , addOptionField : String
     , notes : String
     }
+
+-- TODO: add serialization tests
 
 nodeEncoder : Node -> JE.Value
 nodeEncoder node =
@@ -266,18 +269,72 @@ viewLinkToQuestion : Zipper Node -> Html Msg
 viewLinkToQuestion zipper =
     H.button [HE.onClick (Focus zipper)] [H.text <| prompt <| Z.label zipper]
 
+shortcuts : List String -> Dict String Char
+shortcuts =
+  let
+    winnersAtIndex : Set Char -> Int -> List String -> Dict String Char
+    winnersAtIndex taken index strs =
+      case strs of
+        [] -> Dict.empty
+        s :: rest ->
+          case String.uncons (String.dropLeft index <| String.toLower s) of
+            Just (c, _) ->
+              if Set.member c taken then
+                winnersAtIndex taken index rest
+              else
+                ( Dict.insert s c <|
+                  winnersAtIndex (Set.insert c taken) index rest
+                )
+            Nothing ->
+              winnersAtIndex taken index rest
+
+    shortcutsWithExclusions : Set Char -> Int -> List String -> Dict String Char
+    shortcutsWithExclusions taken startAt strs =
+      let
+        immediateWinners = winnersAtIndex taken startAt strs
+        nonHopelessLosers =
+          strs
+          |> List.filter (\s -> not (Dict.member s immediateWinners))
+          |>  List.filter (\s -> String.length s > startAt)
+        _ = Debug.log "state" ((taken, startAt, strs), (immediateWinners, nonHopelessLosers))
+      in
+        if List.isEmpty nonHopelessLosers then
+          immediateWinners
+        else
+          Dict.union immediateWinners <|
+          shortcutsWithExclusions
+            (Set.union taken <| Set.fromList <| Dict.values immediateWinners)
+            (startAt+1)
+            nonHopelessLosers
+  in
+    shortcutsWithExclusions Set.empty 0
+
+emphasizeShortcut : Char -> String -> Html msg
+emphasizeShortcut shortcutChar str =
+  let shortcut = String.fromChar shortcutChar in
+  case String.indexes shortcut (String.toLower str) of
+    [] ->
+      H.span []
+        [ H.strong [] [H.text <| "("++shortcut++")"]
+        , H.text <| " " ++ str
+        ]
+    i :: _ ->
+      H.span []
+        [ H.text (String.left i str)
+        , H.strong [] [H.text <| "("++shortcut++")"]
+        , H.text (String.dropLeft (i+1) str)
+        ]
+
 viewActiveQuestion : Node -> Html Msg
 viewActiveQuestion node =
   case node of
     SelectManyNode data ->
       let
-        optionToShortcut : Dict Option String
+        optionToShortcut : Dict Option Char
         optionToShortcut =
-            Dict.fromList <| List.map2 Tuple.pair
-                data.allOptions
-                (String.split "" "abcdefghijklmnopqrstuvwxyz")
+          shortcuts (data.allOptions)
 
-        shortcutToOption : Dict String Option
+        shortcutToOption : Dict Char Option
         shortcutToOption =
             optionToShortcut
             |> Dict.toList
@@ -291,7 +348,9 @@ viewActiveQuestion node =
             else if key == "ArrowRight" || (not shift && key == "Enter") then
                 Forward
             else
-                Dict.get key shortcutToOption |> Maybe.map ToggleChecked |> Maybe.withDefault Ignore
+                case String.uncons key of
+                  Just (char, "") -> Dict.get char shortcutToOption |> Maybe.map ToggleChecked |> Maybe.withDefault Ignore
+                  _ -> Ignore
 
       in
       H.div []
@@ -302,9 +361,8 @@ viewActiveQuestion node =
                 , HE.onClick (ToggleChecked option)
                 ]
                 [ case Dict.get option optionToShortcut of
-                    Nothing -> H.text ""
-                    Just shortcut -> H.strong [] [ H.text <| "(" ++ shortcut ++ ") "]
-                , H.text option
+                    Nothing -> H.text option
+                    Just shortcut -> emphasizeShortcut shortcut option
                 ]
             )
           |> (\hs -> hs ++
@@ -312,6 +370,7 @@ viewActiveQuestion node =
                   [ HE.onInput SetAddOptionField
                   , HA.placeholder "add option"
                   , HA.value data.addOptionField
+                  , HE.on "keydown" (JD.map (\key -> if key == "Enter" then AddOption else Ignore) <| JD.field "key" JD.string)
                   ]
                   []
               , H.button [HE.onClick AddOption] [H.text "Add"]
@@ -329,13 +388,11 @@ viewActiveQuestion node =
 
     SelectOneNode data ->
       let
-        optionToShortcut : Dict Option String
+        optionToShortcut : Dict Option Char
         optionToShortcut =
-            Dict.fromList <| List.map2 Tuple.pair
-                data.allOptions
-                (String.split "" "abcdefghijklmnopqrstuvwxyz")
+          shortcuts (data.allOptions)
 
-        shortcutToOption : Dict String Option
+        shortcutToOption : Dict Char Option
         shortcutToOption =
             optionToShortcut
             |> Dict.toList
@@ -349,7 +406,9 @@ viewActiveQuestion node =
             else if key == "ArrowRight" || (not shift && key == "Enter") then
                 Forward
             else
-                Dict.get key shortcutToOption |> Maybe.map Select |> Maybe.withDefault Ignore
+                case String.uncons key of
+                  Just (char, "") -> Dict.get char shortcutToOption |> Maybe.map Select |> Maybe.withDefault Ignore
+                  _ -> Ignore
 
       in
       H.div []
@@ -360,9 +419,8 @@ viewActiveQuestion node =
                 , HE.onClick (Select option)
                 ]
                 [ case Dict.get option optionToShortcut of
-                    Nothing -> H.text ""
-                    Just shortcut -> H.strong [] [ H.text <| "(" ++ shortcut ++ ") "]
-                , H.text option
+                    Nothing -> H.text option
+                    Just shortcut -> emphasizeShortcut shortcut option
                 ]
             )
           |> (\hs -> hs ++
