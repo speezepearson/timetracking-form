@@ -47,30 +47,6 @@ type alias Node =
     , isFollowup : (Set Option -> IsolatedQuestion -> Bool)
     }
 
-type alias Form = Tree Node
-
-toQuestionTree : Form -> Tree IsolatedQuestion
-toQuestionTree form =
-    let
-        distillLabel : Node -> Node
-        distillLabel = identity
-
-        reduce : Node -> List (Tree IsolatedQuestion) -> Tree IsolatedQuestion
-        reduce node children =
-            T.tree
-                node.question
-                ( children
-                  |> (Debug.log <| "children of " ++ Debug.toString node)
-                  |> List.filter (T.label >> node.isFollowup node.question.checked)
-                  |> Debug.log "filtered"
-                )
-    in
-        T.restructure
-            distillLabel
-            reduce
-            form
-
-
 
 areYouAwake : IsolatedQuestion
 areYouAwake =
