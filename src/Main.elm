@@ -1,179 +1,273 @@
-module Main exposing (..)
+module Question exposing
+    ( ..
+    )
 
 import Browser
-import Html exposing (Html, Attribute, span, div, form, label, input, text)
-import Html.Attributes exposing (attribute, name, type_, checked, value, disabled, id)
-import Html.Events exposing (onClick, onInput, onCheck, onSubmit)
+import Browser.Dom
+import Html as H exposing (Html)
+import Html.Attributes as HA
+import Html.Events as HE
+import Json.Decode as JD
+import Task
 
 import Dict exposing (Dict)
 import Set exposing (Set)
-
-import Prompts
-
-
-
--- MAIN
-
-
-main =
-    Browser.sandbox { init = init, update = update, view = view }
-
-
-
--- MODEL
+import Tree as T exposing (Tree)
+import Tree.Zipper as Z exposing (Zipper)
 
 type alias Prompt = String
 type alias Option = String
-type alias Question =
-    { options : List Option
-    , followups : Answer -> List Prompt
-    }
-type alias Answer = { selected : Set Option , notes : String }
-type PartialAnswer
-    = Tentative Answer
-    | Finalized Answer
 
-emptyAnswer : PartialAnswer
-emptyAnswer =
-    Tentative { selected = Set.empty , notes = "" }
+type alias IsolatedQuestion =
+    { prompt : Prompt
+    , allOptions : List Option
+    , checked : Set Option
+    }
+
+check : Option -> IsolatedQuestion -> IsolatedQuestion
+check option question =
+    { question | checked = question.checked |> Set.insert option }
+
+uncheck : Option -> IsolatedQuestion -> IsolatedQuestion
+uncheck option question =
+    { question | checked = question.checked |> Set.remove option }
+
+toggle : Option -> IsolatedQuestion -> IsolatedQuestion
+toggle option question =
+    (if Set.member option question.checked then uncheck else check) option question
+
+
+
+
+
+
+
+type alias Node =
+    { question : IsolatedQuestion
+    , isFollowup : (Set Option -> IsolatedQuestion -> Bool)
+    }
+
+type alias Form = Tree Node
+
+toQuestionTree : Form -> Tree IsolatedQuestion
+toQuestionTree form =
+    let
+        distillLabel : Node -> Node
+        distillLabel = identity
+
+        reduce : Node -> List (Tree IsolatedQuestion) -> Tree IsolatedQuestion
+        reduce node children =
+            T.tree
+                node.question
+                ( children
+                  |> (Debug.log <| "children of " ++ Debug.toString node)
+                  |> List.filter (T.label >> node.isFollowup node.question.checked)
+                  |> Debug.log "filtered"
+                )
+    in
+        T.restructure
+            distillLabel
+            reduce
+            form
+
+
+
+areYouAwake : IsolatedQuestion
+areYouAwake =
+    { prompt = "Are you awake?"
+    , allOptions = ["no"]
+    , checked = Set.empty
+    }
+
+
+whoAreYouWith : IsolatedQuestion
+whoAreYouWith =
+    { prompt = "Who are you with?"
+    , allOptions=["Rebecca", "Yam"]
+    , checked=Set.empty
+    }
 
 type alias Model =
-    { questionAnswers : Dict Prompt { question : Question , answer : PartialAnswer}
-    , rootQuestions : List Prompt
+    { focus : Zipper Node
     }
-
-isDone : Model -> Prompt -> Bool
-isDone model prompt =
-    case Dict.get prompt model.questionAnswers of
-        Nothing -> False
-        Just {answer} ->
-            case answer of
-                Tentative _ -> False
-                Finalized _ -> True
-
-allQuestions : Dict Prompt Question
-allQuestions =
-    Dict.fromList
-        [ ( Prompts.areYouAwake
-          , { options=["no"] -- TODO: want True/False
-            , followups=(\ans -> if Set.member "no" ans.selected then [] else [Prompts.whoAreYouWith])
-            }
-          )
-        , ( Prompts.whoAreYouWith
-          , { options=["Rebecca","Yam"]
-            , followups=(always [])
-            }
-          )
-        ]
-
-init : Model
-init =
-    { rootQuestions = [Prompts.areYouAwake]
-    , questionAnswers = Dict.map (\k v -> {question=v, answer=emptyAnswer}) allQuestions
-    }
-
-
-
--- UPDATE
-
 
 type Msg
-    = Finalize Prompt
-    | Definalize Prompt
-    | SetSelected Prompt Option Bool
+    = ToggleChecked Option
+    | Focus (Zipper Node)
+    | Forward
+    | Backward
+    | Ignore
 
+init : () -> ( Model , Cmd Msg )
+init () =
+  ( { focus = Z.fromTree <| T.tree
+        { question = areYouAwake
+        , isFollowup = (\checked {prompt} ->
+            if Set.member "no" checked then
+                List.member prompt [whoAreYouWith.prompt]
+            else
+                False
+            )
+        }
+        [ T.singleton { question = whoAreYouWith , isFollowup = (\_ _ -> False) }
+        ]
+    }
+  , Task.attempt
+      (always Ignore)
+      (Browser.Dom.focus "shortcut-input")
+  )
 
-update : Msg -> Model -> Model
+update : Msg -> Model -> ( Model , Cmd Msg)
 update msg model =
     case msg of
-        Finalize prompt ->
-            Debug.log ("finalizing " ++ prompt) <|
-            { model
-            | questionAnswers = model.questionAnswers
-                |> Dict.update prompt (Maybe.map (\qa -> { qa | answer = qa.answer |> (\partialAnswer -> case partialAnswer of
-                        Tentative ans -> Finalized ans
-                        Finalized ans -> Finalized ans |> Debug.log "ignoring Finalize because already finalized"
-                    )}))
-            }
+        ToggleChecked option ->
+            ( { model | focus = model.focus |> Z.mapLabel (\n -> {n | question = n.question |> toggle option}) }
+            , Cmd.none
+            )
+        Focus focus ->
+            ( { model | focus = focus |> Debug.log ("focusing on " ++ Debug.toString (Z.label focus)) }
+            , Cmd.none
+            )
+        Forward ->
+            ( { model | focus = nextRelevant model.focus |> Maybe.withDefault model.focus }
+            , Cmd.none
+            )
+        Backward ->
+            ( { model | focus = prevRelevant model.focus |> Maybe.withDefault model.focus }
+            , Cmd.none
+            )
+        Ignore ->
+            ( model , Cmd.none )
 
-        Definalize prompt ->
-            Debug.log ("definalizing " ++ prompt) <|
-            { model
-            | questionAnswers = model.questionAnswers
-                |> Dict.update prompt (Maybe.map (\qa -> { qa | answer = qa.answer |> (\partialAnswer -> case partialAnswer of
-                        Tentative ans -> Tentative ans |> Debug.log "ignoring Finalize because already finalized"
-                        Finalized ans -> Tentative ans
-                    )}))
-            }
+isRelevant : Zipper Node -> Bool
+isRelevant zipper =
+    Debug.log ("is " ++ Debug.toString (Z.label zipper) ++ " relevant?") <|
+    case Z.parent zipper of
+        Nothing -> True
+        Just parent ->
+            let
+                {question, isFollowup} = Z.label parent
+            in
+                isFollowup question.checked (Z.label zipper).question && isRelevant parent
 
-        SetSelected prompt option value ->
-            { model
-            | questionAnswers = model.questionAnswers
-                |> Dict.update prompt (Maybe.map (\qa -> { qa | answer = qa.answer |> (\partialAnswer -> case partialAnswer of
-                        Tentative ans -> Tentative { ans | selected = ans.selected |> (if value then Set.insert option else Set.remove option) }
-                        Finalized ans -> Finalized ans |> Debug.log "refusing to modify finalized answer"
-                    )}))
-            }
+nextRelevant : Zipper Node -> Maybe (Zipper Node)
+nextRelevant zipper =
+    case Z.forward zipper of
+        Nothing -> Nothing
+        Just next ->
+            if isRelevant next then
+                Just next
+            else
+                nextRelevant next
 
+prevRelevant : Zipper Node -> Maybe (Zipper Node)
+prevRelevant zipper =
+    case Z.backward zipper of
+        Nothing -> Nothing
+        Just next ->
+            if isRelevant next then
+                Just next
+            else
+                nextRelevant next
 
+relevantPredecessors : Zipper Node -> List (Zipper Node)
+relevantPredecessors zipper =
+    case prevRelevant zipper of
+        Nothing -> []
+        Just prev -> prev :: relevantPredecessors prev
 
-
--- VIEW
+relevantSuccessors : Zipper Node -> List (Zipper Node)
+relevantSuccessors zipper =
+    case nextRelevant zipper of
+        Nothing -> []
+        Just next -> next :: relevantSuccessors next
 
 view : Model -> Html Msg
-view model =
+view {focus} =
     let
-        reachable = reachablePrompts model
-        todo = List.filter (not << isDone model) reachable
-        done = Set.toList <| Set.diff (Set.fromList reachable) <| Set.fromList todo
+        _ = Debug.log "focus" (Z.label focus)
+        _ = Debug.log "forward" (Z.forward focus |> Maybe.map Z.label)
+
+        prev = relevantPredecessors focus
+        next = relevantSuccessors focus
+        _ = Debug.log "next" (List.map (Z.label >> .question >> .prompt) next)
     in
-        (todo ++ done)
-        |> List.map (\p -> case Dict.get p model.questionAnswers of
-            Just {question, answer} -> viewQuestionAnswer p question answer
-            Nothing -> Debug.todo "impossible"
+        H.div []
+            [ viewActiveQuestion (Z.label focus).question
+            , H.hr [] []
+            , H.div [HA.style "display" "flex"]
+                [ H.div [HA.style "width" "50%"]
+                    [ H.text "Previous questions:"
+                    , prev
+                      |> List.map (\q -> H.li [] [viewLinkToQuestion q])
+                      |> H.ul [HA.style "width" "50%"]
+                    ]
+                , H.div [HA.style "width" "50%"]
+                    [ H.text "Upcoming questions:"
+                    , next
+                      |> List.map (\q -> H.li [] [viewLinkToQuestion q])
+                      |> H.ul [HA.style "width" "50%"]
+                    ]
+                ]
+            ]
+
+viewLinkToQuestion : Zipper Node -> Html Msg
+viewLinkToQuestion zipper =
+    H.button [HE.onClick (Focus zipper)] [H.text (Z.label zipper).question.prompt]
+
+viewActiveQuestion : IsolatedQuestion -> Html Msg
+viewActiveQuestion question =
+    let
+        optionToShortcut : Dict Option String
+        optionToShortcut =
+            Dict.fromList <| List.map2 Tuple.pair
+                question.allOptions
+                (String.split "" "abcdefghijklmnopqrstuvwxyz")
+
+        shortcutToOption : Dict String Option
+        shortcutToOption =
+            optionToShortcut
+            |> Dict.toList
+            |> List.map (\(o,s) -> (s,o))
+            |> Dict.fromList
+
+        onKeydown : { shift : Bool , key : String } -> Msg
+        onKeydown {shift, key} =
+            if key == "ArrowLeft" || (shift && key == "Enter") then
+                Backward
+            else if key == "ArrowRight" || (not shift && key == "Enter") then
+                Forward
+            else
+                Dict.get key shortcutToOption |> Maybe.map ToggleChecked |> Maybe.withDefault Ignore
+
+    in
+    H.div []
+        [ H.text question.prompt
+        , question.allOptions
+          |> List.map (\option -> H.button
+                [ HA.style "outline" (if Set.member option question.checked then "3px solid green" else "")
+                , HE.onClick (ToggleChecked option)
+                ]
+                [ case Dict.get option optionToShortcut of
+                    Nothing -> H.text ""
+                    Just shortcut -> H.strong [] [ H.text <| "(" ++ shortcut ++ ") "]
+                , H.text option
+                ]
             )
-        |> div []
-
-viewQuestionAnswer : Prompt -> Question -> PartialAnswer -> Html Msg
-viewQuestionAnswer prompt question partialAnswer =
-    case partialAnswer of
-        Tentative answer ->
-            form [onSubmit (Finalize prompt)]
-                [ text prompt
-                , question.options
-                  |> List.map (\option -> viewCheckbox prompt option [checked (Set.member option answer.selected)])
-                  |> div []
-                , input [type_ "submit", value "Finalize"] []
-                ]
-        Finalized answer ->
-            form [onSubmit (Definalize prompt)]
-                [ text prompt
-                , question.options
-                  |> List.map (\option -> viewCheckbox prompt option [checked (Set.member option answer.selected), disabled True])
-                  |> div []
-                , input [type_ "submit", value "Re-answer"] []
-                ]
-
-
-viewCheckbox : Prompt -> Option -> List (Attribute Msg) -> Html Msg
-viewCheckbox prompt option attrs =
-    let id_ = prompt ++ option in
-    span []
-        [ input (attrs ++ [ type_ "checkbox" , onCheck (SetSelected prompt option) , id id_ ]) []
-        , label [ attribute "for" id_ ] [ text option ]
+          |> H.div []
+        , H.input
+            [ HE.on "keydown" (JD.map2 (\shift key -> onKeydown {shift=shift,key=key}) (JD.field "shiftKey" JD.bool) (JD.field "key" JD.string))
+            , HA.value ""
+            , HA.id "shortcut-input"
+            , HA.placeholder "shortcuts or arrow keys..."
+            ]
+            []
         ]
 
-reachablePrompts : Model -> List Prompt
-reachablePrompts model =
-    let
-        descendants : Prompt -> List Prompt
-        descendants prompt =
-            Debug.log ("descendants of " ++ prompt) <|
-            case Dict.get prompt model.questionAnswers of
-                Just {question, answer} ->
-                    case answer of
-                        Tentative _ -> [prompt]
-                        Finalized ans -> prompt :: List.concatMap descendants (question.followups ans)
-                Nothing -> Debug.todo ("prompt missing: " ++ prompt)
-    in
-        List.concatMap descendants model.rootQuestions
+
+main = Browser.element
+    { init = init
+    , view = view
+    , update = update
+    , subscriptions = (\_ -> Sub.none)
+    }
