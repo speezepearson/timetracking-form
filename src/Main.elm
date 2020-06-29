@@ -642,8 +642,6 @@ whoAreYouWith =
       , "Ellie"
       , "Crystal"
       , "Justin"
-      , "Dad"
-      , "Cathy"
       , "Florence"
       ]
     , checked = Nothing
