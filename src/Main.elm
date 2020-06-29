@@ -9,6 +9,7 @@ import Html.Attributes as HA
 import Html.Events as HE
 import Json.Decode as JD
 import Json.Encode as JE
+import Bytes exposing (Bytes)
 import Task
 
 import Dict exposing (Dict)
@@ -17,8 +18,29 @@ import Set exposing (Set)
 import Tree as T exposing (Tree)
 import Tree.Zipper as Z exposing (Zipper)
 
+import Protobuf.Decode
+import Protobuf.Encode
+
+import Proto
+import Persistence
+
 type alias Prompt = String
 type alias Option = String
+
+saveShim : ( Model , Cmd msg ) -> ( Model , Cmd msg )
+saveShim (model, cmd) =
+  ( model
+  , Cmd.batch [save (Z.toTree model.focus), cmd]
+  )
+save : Tree Node -> Cmd msg
+save tree =
+  tree
+  |> Debug.log "saving tree"
+  |> nodeTreeToProtobuf
+  |> Debug.log "saving protobuf"
+  |> Proto.toNodeTreeEncoder
+  |> Protobuf.Encode.encode
+  |> Persistence.saveBytes
 
 
 type Node
@@ -42,58 +64,79 @@ type Node
 
 -- TODO: add serialization tests
 
-encodeNode : Node -> JE.Value
-encodeNode node =
-  case node of
-    SelectManyNode data ->
-      JE.object
-        [ ( "type", "SelectManyNode" |> JE.string )
-        , ( "prompt", data.prompt |> JE.string  )
-        , ( "allOptions", data.allOptions |> JE.list JE.string )
-        , ( "checked", data.checked |> Maybe.map (Set.toList >> JE.list JE.string) |> Maybe.withDefault JE.null )
-        , ( "ifCheckedFollowups", data.ifCheckedFollowups |> JE.dict identity (Set.toList >> JE.list JE.string) )
-        , ( "ifUncheckedFollowups", data.ifUncheckedFollowups |> JE.dict identity (Set.toList >> JE.list JE.string) )
-        -- , ( "addOptionField", data.addOptionField )
-        , ( "notes", data.notes |> JE.string )
-        ]
-    SelectOneNode data ->
-      JE.object
-        [ ( "type", "SelectOneNode" |> JE.string )
-        , ( "prompt", data.prompt |> JE.string  )
-        , ( "allOptions", data.allOptions |> JE.list JE.string )
-        , ( "selected", data.selected |> Maybe.map JE.string |> Maybe.withDefault JE.null )
-        , ( "followups", data.followups |> JE.dict identity (Set.toList >> JE.list JE.string) )
-        -- , ( "addOptionField", data.addOptionField )
-        , ( "notes", data.notes |> JE.string )
-        ]
+nodeTreeToProtobuf : Tree Node -> Proto.NodeTree
+nodeTreeToProtobuf tree =
+  { root = T.label tree |> nodeToProtobuf |> Just
+  , children = T.children tree |> List.map nodeTreeToProtobuf |> Proto.NodeTreeChildren
+  }
+nodeTreeFromProtobuf : Proto.NodeTree -> Result String (Tree Node)
+nodeTreeFromProtobuf {root, children} =
+  case (root, children) of
+    (Nothing, _) -> Err "no root"
+    (Just pblabel, Proto.NodeTreeChildren pbchildren) ->
+      nodeFromProtobuf pblabel |> Result.map (\label ->
+        T.tree label
+        (pbchildren |> List.map nodeTreeFromProtobuf |> List.concatMap (\r ->
+          case r of
+            Ok x -> [x]
+            Err e -> Debug.log ("error parsing protobuf: " ++ Debug.toString e) []
+          ))
+        )
 
-nodeDecoder : JD.Decoder Node
-nodeDecoder =
-  JD.field "type" JD.string |> JD.andThen (\type_ ->
-    if type_ == "SelectManyNode" then
-      JD.map6 (\prompt_ allOptions checked ifCheckedFollowups ifUncheckedFollowups notes -> SelectManyNode {prompt=prompt_, allOptions=allOptions, checked=checked, notes=notes, ifCheckedFollowups=ifCheckedFollowups, ifUncheckedFollowups=ifUncheckedFollowups, addOptionField=""})
-        (JD.field "prompt" JD.string)
-        (JD.field "allOptions" <| JD.list JD.string)
-        (JD.field "checked" <| (JD.nullable (JD.list JD.string) |> JD.map (Maybe.map Set.fromList)))
-        (JD.field "ifCheckedFollowups" <| JD.dict (JD.list JD.string |> JD.map Set.fromList))
-        (JD.field "ifUncheckedFollowups" <| JD.dict (JD.list JD.string |> JD.map Set.fromList))
-        (JD.field "notes" JD.string)
-    else if type_ == "SelectOneNode" then
-      JD.map5 (\prompt_ allOptions selected followups notes -> SelectOneNode {prompt=prompt_, allOptions=allOptions, selected=selected, notes=notes, followups=followups, addOptionField=""})
-        (JD.field "prompt" JD.string)
-        (JD.field "allOptions" <| JD.list JD.string)
-        (JD.field "selected" <| JD.nullable JD.string)
-        (JD.field "followups" <| JD.dict (JD.list JD.string |> JD.map Set.fromList))
-        (JD.field "notes" JD.string)
-    else
-      JD.fail ("unrecognized type: " ++ type_)
-    )
+nodeToProtobuf : Node -> Proto.Node
+nodeToProtobuf node =
+  { prompt = prompt node
+  , notes = notes node
+  , kind = Just <| case node of
+      SelectManyNode data ->
+        Proto.KindSelectMany
+          { allOptions = data.allOptions
+          , checked = data.checked |> Maybe.map (Set.toList >> List.sort >> Proto.Strings)
+          , ifCheckedFollowups = data.ifCheckedFollowups |> Dict.map (\_ v -> v |> Set.toList |> List.sort |> Proto.Strings |> Just)
+          , ifUncheckedFollowups = data.ifUncheckedFollowups |> Dict.map (\_ v -> v |> Set.toList |> List.sort |> Proto.Strings |> Just)
+          }
+      SelectOneNode data ->
+        Proto.KindSelectOne
+          { allOptions = data.allOptions
+          , selected = data.selected |> Maybe.map Proto.MaybeString
+          , followups = data.followups |> Dict.map (\_ v -> v |> Set.toList |> List.sort |> Proto.Strings |> Just)
+          }
+  }
+nodeFromProtobuf : Proto.Node -> Result String Node
+nodeFromProtobuf pbnode =
+  case pbnode.kind of
+    Just (Proto.KindSelectMany data) -> Ok <|
+      SelectManyNode
+        { prompt = pbnode.prompt
+        , allOptions = data.allOptions
+        , checked = data.checked |> Maybe.map (.values >> Set.fromList)
+        , ifCheckedFollowups = data.ifCheckedFollowups |> Dict.map (\_ -> Maybe.map (.values >> Set.fromList) >> Maybe.withDefault Set.empty)
+        , ifUncheckedFollowups = data.ifUncheckedFollowups |> Dict.map (\_ -> Maybe.map (.values >> Set.fromList) >> Maybe.withDefault Set.empty)
+        , notes = pbnode.notes
+        , addOptionField = ""
+        }
+    Just (Proto.KindSelectOne data) -> Ok <|
+      SelectOneNode
+        { prompt = pbnode.prompt
+        , allOptions = data.allOptions
+        , selected = data.selected |> Maybe.map .value
+        , followups = data.followups |> Dict.map (\_ -> Maybe.map (.values >> Set.fromList) >> Maybe.withDefault Set.empty)
+        , notes = pbnode.notes
+        , addOptionField = ""
+        }
+    kind -> Err ("unknown node-kind: " ++ Debug.toString kind)
 
 prompt : Node -> Prompt
 prompt node =
   case node of
     SelectManyNode data -> data.prompt
     SelectOneNode data -> data.prompt
+
+notes : Node -> Prompt
+notes node =
+  case node of
+    SelectManyNode data -> data.notes
+    SelectOneNode data -> data.notes
 
 isAnswered : Node -> Bool
 isAnswered node =
@@ -148,9 +191,22 @@ type Msg
     | Backward
     | Ignore
 
-init : () -> ( Model , Cmd Msg )
-init () =
-  ( { focus = Z.fromTree myTree }
+type alias Flags =
+  { localTreeBytes : Maybe (List Int)
+  }
+
+init : Flags -> ( Model , Cmd Msg )
+init {localTreeBytes} =
+  ( { focus = localTreeBytes
+      |> Debug.log "local tree bytes"
+      |> Maybe.map Persistence.listIntToBytes
+      |> Maybe.andThen (Protobuf.Decode.decode Proto.nodeTreeDecoder)
+      |> Debug.log "loading protobuf"
+      |> Maybe.andThen (nodeTreeFromProtobuf >> Result.toMaybe)
+      |> Debug.log "loadidng tree"
+      |> Maybe.withDefault myTree
+      |> Z.fromTree
+    }
   , focusOnShortcuts
   )
 
@@ -173,6 +229,7 @@ update msg model =
               }
             , Cmd.none
             )
+            |> saveShim
         Select option ->
             ( { model
               | focus = model.focus |> Z.mapLabel (\node -> case node of
@@ -182,6 +239,7 @@ update msg model =
               }
             , Cmd.none
             )
+            |> saveShim
         SetAddOptionField value ->
             ( { model
               | focus = model.focus |> Z.mapLabel (\node -> case node of
@@ -202,6 +260,7 @@ update msg model =
               }
             , focusOnShortcuts
             )
+            |> saveShim
         Focus focus ->
             ( { model | focus = focus |> Debug.log ("focusing on " ++ Debug.toString (Z.label focus)) }
             , Cmd.none

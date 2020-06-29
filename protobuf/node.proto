@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+message GetLastPingRequest {}
+message GetLastPingResponse {
+  Ping last_ping = 1;
+}
+
+message WritePingRequest {
+  Ping ping = 1;
+}
+message WritePingResponse {
+}
+
+message Ping {
+  int64 unix_time = 1;
+  NodeTree schema = 2;
+  NodeTree answers = 3;
+}
+
+message NodeTree {
+  Node root = 1;
+  repeated NodeTree children = 2;
+}
+
+message Node {
+  string prompt = 1;
+  string notes = 2;
+  oneof kind {
+    SelectManyNode select_many = 3;
+    SelectOneNode select_one = 4;
+  }
+}
+
+message MaybeString {
+  string value = 1;
+}
+message Strings {
+  repeated string values = 1;
+}
+
+message SelectManyNode {
+  repeated string all_options = 1;
+  Strings checked = 2;
+  map<string, Strings> ifCheckedFollowups = 3;
+  map<string, Strings> ifUncheckedFollowups = 4;
+}
+
+message SelectOneNode {
+  repeated string all_options = 1;
+  MaybeString selected = 2;
+  map<string, Strings> followups = 3;
+}
