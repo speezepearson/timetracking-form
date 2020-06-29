@@ -171,6 +171,7 @@ pruneIrrelevant tree =
 
 type alias Model =
     { focus : Zipper Node
+    , isCommitted : Bool
     }
 
 type Msg
@@ -183,11 +184,13 @@ type Msg
     | Backward
     | GotLastPing (Result Http.Error Proto.GetLastPingResponse)
     | CommitPing
+    | PingCommitted (Result Http.Error Proto.WritePingResponse)
     | Ignore
 
 init : () -> ( Model , Cmd Msg )
 init () =
   ( { focus = Z.fromTree myTree
+    , isCommitted = False
     }
   , Cmd.batch
     [ focusOnShortcuts
@@ -211,6 +214,7 @@ update msg model =
                       { data | checked = data.checked |> Maybe.withDefault Set.empty |> (\checked -> if Set.member option checked then Set.remove option checked else Set.insert option checked) |> Just }
                   x -> x |> Debug.log ("ignoring " ++ Debug.toString msg ++ " for non-SelectManyNode")
                 )
+              , isCommitted = False
               }
             , focusOnShortcuts
             )
@@ -220,6 +224,7 @@ update msg model =
                   SelectOneNode data -> SelectOneNode { data | selected = Just option }
                   x -> x |> Debug.log ("ignoring " ++ Debug.toString msg ++ " for non-SelectOneNode")
                 )
+              , isCommitted = False
               }
             , Cmd.none
             )
@@ -240,6 +245,7 @@ update msg model =
                   SelectOneNode data -> SelectOneNode { data | allOptions = data.allOptions ++ [data.addOptionField] , selected = Just data.addOptionField , addOptionField = "" }
                   -- x -> x |> Debug.log ("ignoring " ++ Debug.toString msg ++ " for non-Select*Node")
                 )
+              , isCommitted = False
               }
             , focusOnShortcuts
             )
@@ -278,10 +284,19 @@ update msg model =
             )
         CommitPing ->
             ( model
-            , Endpoints.writePing (Debug.log "saved remotely" >> always Ignore)
+            , Endpoints.writePing PingCommitted
               <| (\pbtree -> Proto.WritePingRequest (Just {unixTime = 123 , answers = Just pbtree}))
               <| nodeTreeToProtobuf
               <| Z.toTree model.focus
+            )
+        PingCommitted (Ok _) ->
+            ( { model | isCommitted = True }
+            , Cmd.none
+            )
+        PingCommitted (Err _) ->
+            Debug.log ("error committing ping: " ++ Debug.toString e) <|
+            ( model
+            , Cmd.none
             )
         Ignore ->
             ( model , Cmd.none )
@@ -326,7 +341,7 @@ relevantSuccessors zipper =
         Just next -> next :: relevantSuccessors next
 
 view : Model -> Html Msg
-view {focus} =
+view {focus, isCommitted} =
     let
         -- _ = Debug.log "focus" (Z.label focus)
         -- _ = Debug.log "forward" (Z.forward focus |> Maybe.map Z.label)
@@ -336,10 +351,11 @@ view {focus} =
         -- _ = Debug.log "next" (List.map (Z.label >> prompt) next)
     in
         H.div []
-            [ if (List.all isAnswered <| T.flatten <| pruneIrrelevant <| Z.toTree focus) then
-                H.button [HE.onClick CommitPing] [H.text "Commit"]
-              else
-                H.text ""
+            [ H.button
+                [ HE.onClick CommitPing
+                , HA.disabled <| isCommitted || (List.any (not << isAnswered) <| T.flatten <| pruneIrrelevant <| Z.toTree focus)
+                ]
+                [ H.text "Commit" ]
             , viewActiveQuestion (Z.label focus)
             , H.hr [] []
             , H.div [HA.style "display" "flex"]
@@ -449,16 +465,28 @@ viewActiveQuestion node =
             |> List.map (\(o,s) -> (s,o))
             |> Dict.fromList
 
-        onKeydown : { shift : Bool , key : String } -> Msg
-        onKeydown {shift, key} =
-            if key == "ArrowLeft" || (shift && key == "Enter") then
+        onKeydown : { shift : Bool , ctrl : Bool , key : String } -> Msg
+        onKeydown {shift, ctrl, key} =
+          case (shift, ctrl, key) of
+            (True, False, "Enter") ->
                 Backward
-            else if key == "ArrowRight" || (not shift && key == "Enter") then
+            (_, _, "ArrowLeft") ->
+                Backward
+            (False, False, "Enter") ->
                 Forward
-            else
+            (False, True, "Enter") ->
+                CommitPing
+            (_, _, "ArrowRight") ->
+                Forward
+            (False, False, _) ->
                 case String.uncons key of
-                  Just (char, "") -> Dict.get char shortcutToOption |> Maybe.map ToggleChecked |> Maybe.withDefault Ignore
+                  Just (char, "") ->
+                    Dict.get char shortcutToOption
+                    |> Maybe.map ToggleChecked
+                    |> Maybe.withDefault Ignore
                   _ -> Ignore
+            (_, _, _) ->
+                Ignore
 
       in
       H.div []
@@ -486,7 +514,7 @@ viewActiveQuestion node =
              )
           |> H.div []
         , H.input
-            [ HE.on "keydown" (JD.map2 (\shift key -> onKeydown {shift=shift,key=key}) (JD.field "shiftKey" JD.bool) (JD.field "key" JD.string))
+            [ HE.on "keydown" (JD.map3 (\shift ctrl key -> onKeydown {shift=shift,ctrl=ctrl,key=key}) (JD.field "shiftKey" JD.bool) (JD.field "ctrlKey" JD.bool) (JD.field "key" JD.string))
             , HA.value ""
             , HA.id "shortcut-input"
             , HA.placeholder "shortcuts or arrow keys..."
@@ -507,16 +535,28 @@ viewActiveQuestion node =
             |> List.map (\(o,s) -> (s,o))
             |> Dict.fromList
 
-        onKeydown : { shift : Bool , key : String } -> Msg
-        onKeydown {shift, key} =
-            if key == "ArrowLeft" || (shift && key == "Enter") then
+        onKeydown : { shift : Bool , ctrl : Bool , key : String } -> Msg
+        onKeydown {shift, ctrl, key} =
+          case (shift, ctrl, key) of
+            (True, False, "Enter") ->
                 Backward
-            else if key == "ArrowRight" || (not shift && key == "Enter") then
+            (_, _, "ArrowLeft") ->
+                Backward
+            (False, False, "Enter") ->
                 Forward
-            else
+            (False, True, "Enter") ->
+                CommitPing
+            (_, _, "ArrowRight") ->
+                Forward
+            (False, False, _) ->
                 case String.uncons key of
-                  Just (char, "") -> Dict.get char shortcutToOption |> Maybe.map Select |> Maybe.withDefault Ignore
+                  Just (char, "") ->
+                    Dict.get char shortcutToOption
+                    |> Maybe.map Select
+                    |> Maybe.withDefault Ignore
                   _ -> Ignore
+            (_, _, _) ->
+                Ignore
 
       in
       H.div []
@@ -544,7 +584,7 @@ viewActiveQuestion node =
              )
           |> H.div []
         , H.input
-            [ HE.on "keydown" (JD.map2 (\shift key -> onKeydown {shift=shift,key=key}) (JD.field "shiftKey" JD.bool) (JD.field "key" JD.string))
+            [ HE.on "keydown" (JD.map3 (\shift ctrl key -> onKeydown {shift=shift,ctrl=ctrl,key=key}) (JD.field "shiftKey" JD.bool) (JD.field "ctrlKey" JD.bool) (JD.field "key" JD.string))
             , HA.value ""
             , HA.id "shortcut-input"
             , HA.placeholder "shortcuts or arrow keys..."
