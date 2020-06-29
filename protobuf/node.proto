@@ -13,8 +13,7 @@ message WritePingResponse {
 
 message Ping {
   int64 unix_time = 1;
-  NodeTree schema = 2;
-  NodeTree answers = 3;
+  NodeTree answers = 2;
 }
 
 message NodeTree {

@@ -11,6 +11,7 @@ import Json.Decode as JD
 import Json.Encode as JE
 import Bytes exposing (Bytes)
 import Task
+import Http
 
 import Dict exposing (Dict)
 import List.Extra
@@ -21,26 +22,11 @@ import Tree.Zipper as Z exposing (Zipper)
 import Protobuf.Decode
 import Protobuf.Encode
 
+import Endpoints
 import Proto
-import Persistence
 
 type alias Prompt = String
 type alias Option = String
-
-saveShim : ( Model , Cmd msg ) -> ( Model , Cmd msg )
-saveShim (model, cmd) =
-  ( model
-  , Cmd.batch [save (Z.toTree model.focus), cmd]
-  )
-save : Tree Node -> Cmd msg
-save tree =
-  tree
-  |> Debug.log "saving tree"
-  |> nodeTreeToProtobuf
-  |> Debug.log "saving protobuf"
-  |> Proto.toNodeTreeEncoder
-  |> Protobuf.Encode.encode
-  |> Persistence.saveBytes
 
 
 type Node
@@ -144,6 +130,12 @@ isAnswered node =
     SelectManyNode data -> (data.checked /= Nothing)
     SelectOneNode data -> (data.selected /= Nothing)
 
+obliterateAnswer : Node -> Node
+obliterateAnswer node =
+  case node of
+    SelectManyNode data -> SelectManyNode {data | checked = Nothing}
+    SelectOneNode data -> SelectOneNode {data | selected = Nothing}
+
 isFollowupRelevant : Node -> Prompt -> Bool
 isFollowupRelevant node followupPrompt =
   case node of
@@ -189,25 +181,18 @@ type Msg
     | Focus (Zipper Node)
     | Forward
     | Backward
+    | GotLastPing (Result Http.Error Proto.GetLastPingResponse)
+    | CommitPing
     | Ignore
 
-type alias Flags =
-  { localTreeBytes : Maybe (List Int)
-  }
-
-init : Flags -> ( Model , Cmd Msg )
-init {localTreeBytes} =
-  ( { focus = localTreeBytes
-      |> Debug.log "local tree bytes"
-      |> Maybe.map Persistence.listIntToBytes
-      |> Maybe.andThen (Protobuf.Decode.decode Proto.nodeTreeDecoder)
-      |> Debug.log "loading protobuf"
-      |> Maybe.andThen (nodeTreeFromProtobuf >> Result.toMaybe)
-      |> Debug.log "loadidng tree"
-      |> Maybe.withDefault myTree
-      |> Z.fromTree
+init : () -> ( Model , Cmd Msg )
+init () =
+  ( { focus = Z.fromTree myTree
     }
-  , focusOnShortcuts
+  , Cmd.batch
+    [ focusOnShortcuts
+    , Endpoints.getLastPing GotLastPing Proto.GetLastPingRequest
+    ]
   )
 
 focusOnShortcuts : Cmd Msg
@@ -227,9 +212,8 @@ update msg model =
                   x -> x |> Debug.log ("ignoring " ++ Debug.toString msg ++ " for non-SelectManyNode")
                 )
               }
-            , Cmd.none
+            , focusOnShortcuts
             )
-            |> saveShim
         Select option ->
             ( { model
               | focus = model.focus |> Z.mapLabel (\node -> case node of
@@ -239,7 +223,6 @@ update msg model =
               }
             , Cmd.none
             )
-            |> saveShim
         SetAddOptionField value ->
             ( { model
               | focus = model.focus |> Z.mapLabel (\node -> case node of
@@ -260,9 +243,8 @@ update msg model =
               }
             , focusOnShortcuts
             )
-            |> saveShim
         Focus focus ->
-            ( { model | focus = focus |> Debug.log ("focusing on " ++ Debug.toString (Z.label focus)) }
+            ( { model | focus = focus }
             , Cmd.none
             )
         Forward ->
@@ -273,12 +255,39 @@ update msg model =
             ( { model | focus = prevRelevant model.focus |> Maybe.withDefault model.focus }
             , Cmd.none
             )
+        GotLastPing (Ok response) ->
+            case response.lastPing
+                 |> Debug.log "got last ping"
+                 |> Maybe.andThen .answers
+                 |> Result.fromMaybe "unpopulated protobuf"
+                 |> Result.andThen nodeTreeFromProtobuf of
+              Ok tree ->
+                ( { model | focus = tree |> T.map obliterateAnswer |> Z.fromTree
+                  }
+                , Cmd.none
+                )
+              Err e ->
+                Debug.log ("error parsing server response for last ping: " ++ Debug.toString e) <|
+                ( model
+                , Cmd.none
+                )
+        GotLastPing (Err e) ->
+            Debug.log ("error loading last ping: " ++ Debug.toString e) <|
+            ( model
+            , Cmd.none
+            )
+        CommitPing ->
+            ( model
+            , Endpoints.writePing (Debug.log "saved remotely" >> always Ignore)
+              <| (\pbtree -> Proto.WritePingRequest (Just {unixTime = 123 , answers = Just pbtree}))
+              <| nodeTreeToProtobuf
+              <| Z.toTree model.focus
+            )
         Ignore ->
             ( model , Cmd.none )
 
 isFocusRelevant : Zipper Node -> Bool
 isFocusRelevant zipper =
-    Debug.log ("is " ++ Debug.toString (Z.label zipper) ++ " relevant?") <|
     case Z.parent zipper of
         Nothing -> True
         Just parent ->
@@ -319,15 +328,19 @@ relevantSuccessors zipper =
 view : Model -> Html Msg
 view {focus} =
     let
-        _ = Debug.log "focus" (Z.label focus)
-        _ = Debug.log "forward" (Z.forward focus |> Maybe.map Z.label)
+        -- _ = Debug.log "focus" (Z.label focus)
+        -- _ = Debug.log "forward" (Z.forward focus |> Maybe.map Z.label)
 
         prev = relevantPredecessors focus
         next = relevantSuccessors focus
-        _ = Debug.log "next" (List.map (Z.label >> prompt) next)
+        -- _ = Debug.log "next" (List.map (Z.label >> prompt) next)
     in
         H.div []
-            [ viewActiveQuestion (Z.label focus)
+            [ if (List.all isAnswered <| T.flatten <| pruneIrrelevant <| Z.toTree focus) then
+                H.button [HE.onClick CommitPing] [H.text "Commit"]
+              else
+                H.text ""
+            , viewActiveQuestion (Z.label focus)
             , H.hr [] []
             , H.div [HA.style "display" "flex"]
                 [ H.div [HA.style "width" "50%"]
