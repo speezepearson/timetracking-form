@@ -136,9 +136,12 @@ Tuple.first (nextPing <| stepUntil <| Time.millisToPosix 1184104776000) == Time.
 --}
 
 type alias Model = { pings : List Time.Posix, pinger : Pinger }
+
 main = Browser.sandbox { init=init, view=view, update=update }
+
 init : Model
 init = {pings=[], pinger=urPinger}
+
 view : Model -> Html.Html ()
 view {pings, pinger} = Html.div []
   [ Html.button [Html.Events.onClick ()] [Html.text "step"]
@@ -149,6 +152,7 @@ view {pings, pinger} = Html.div []
     |> List.map (Time.posixToMillis >> (\x -> x//1000) >> String.fromInt >> Html.text >> List.singleton >> Html.li [])
     |> Html.ul []
   ]
+
 update : () -> Model -> Model
 update () model =
   let (p, pr) = nextPing model.pinger in
