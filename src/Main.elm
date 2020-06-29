@@ -296,7 +296,7 @@ update msg model =
             ( { model | isCommitted = True }
             , Cmd.none
             )
-        PingCommitted (Err _) ->
+        PingCommitted (Err e) ->
             Debug.log ("error committing ping: " ++ Debug.toString e) <|
             ( model
             , Cmd.none
