@@ -153,8 +153,10 @@ isFollowupRelevant node followupPrompt =
           |> Set.member followupPrompt
     SelectOneNode {selected, followups} ->
       selected
+      -- |> Debug.log (prompt node ++ " / selected")
       |> Maybe.andThen (\s -> Dict.get s followups)
       |> Maybe.withDefault Set.empty
+      -- |> Debug.log ("...has followups")
       |> Set.member followupPrompt
 
 
@@ -310,6 +312,7 @@ isFocusRelevant zipper =
 
 nextRelevant : Zipper Node -> Maybe (Zipper Node)
 nextRelevant zipper =
+    -- Debug.log ("next relevant for " ++ prompt (Z.label zipper)) <|
     case Z.forward zipper of
         Nothing -> Nothing
         Just next ->
@@ -336,6 +339,7 @@ relevantPredecessors zipper =
 
 relevantSuccessors : Zipper Node -> List (Zipper Node)
 relevantSuccessors zipper =
+    -- Debug.log ("relevant successors of " ++ prompt (Z.label zipper)) <|
     case nextRelevant zipper of
         Nothing -> []
         Just next -> next :: relevantSuccessors next
@@ -420,7 +424,6 @@ shortcuts =
           strs
           |> List.filter (\s -> not (Dict.member s immediateWinners))
           |>  List.filter (\s -> String.length s > startAt)
-        _ = Debug.log "state" ((taken, startAt, strs), (immediateWinners, nonHopelessLosers))
       in
         if List.isEmpty nonHopelessLosers then
           immediateWinners
@@ -608,10 +611,11 @@ main = Browser.element
 
 myTree : Tree Node
 myTree =
-  T.tree
-    areYouAwake
+  T.tree areYouAwake
     [ T.singleton whoAreYouWith
-    , T.singleton areYouDoingYourJob
+    , T.tree areYouDoingYourJob
+      [ T.singleton whatJobStuffAreYouDoing
+      ]
     ]
 
 containsPrompt : Set comparable -> comparable -> Bool
@@ -625,7 +629,7 @@ areYouAwake =
     , selected = Nothing
     , addOptionField = ""
     , notes = ""
-    , followups = Dict.fromList [("yes", Set.fromList [prompt whoAreYouWith, prompt areYouDoingYourJob])]
+    , followups = Dict.singleton "yes" <| Set.fromList [prompt whoAreYouWith, prompt areYouDoingYourJob]
     }
 
 whoAreYouWith : Node
@@ -657,5 +661,17 @@ areYouDoingYourJob =
     , selected = Nothing
     , addOptionField = ""
     , notes = ""
-    , followups = Dict.empty
+    , followups = Dict.singleton "yes" <| Set.fromList [prompt whatJobStuffAreYouDoing]
+    }
+
+whatJobStuffAreYouDoing : Node
+whatJobStuffAreYouDoing =
+  SelectManyNode
+    { prompt = "What job-stuff are you doing?"
+    , allOptions = ["meeting", "coding", "learning"]
+    , checked = Nothing
+    , addOptionField = ""
+    , notes = ""
+    , ifCheckedFollowups = Dict.empty
+    , ifUncheckedFollowups = Dict.empty
     }
