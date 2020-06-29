@@ -230,6 +230,7 @@ update msg model =
               }
             , Cmd.none
             )
+            |> Tuple.mapFirst (update Forward >> Tuple.first)
         SetAddOptionField value ->
             ( { model
               | focus = model.focus |> Z.mapLabel (\node -> case node of
@@ -349,9 +350,16 @@ view {focus, isCommitted} =
     let
         -- _ = Debug.log "focus" (Z.label focus)
         -- _ = Debug.log "forward" (Z.forward focus |> Maybe.map Z.label)
+        allPosns : List (Zipper Node)
+        allPosns =
+          let
+            successors : Zipper Node -> List (Zipper Node)
+            successors z = z :: (Z.forward z |> Maybe.map successors |> Maybe.withDefault [])
+          in
+            successors (Z.root focus)
 
-        prev = relevantPredecessors focus
-        next = relevantSuccessors focus
+        done = allPosns |> List.filter (\z -> isFocusRelevant z && isAnswered (Z.label z))
+        todo = allPosns |> List.filter (\z -> isFocusRelevant z && not (isAnswered (Z.label z)))
         -- _ = Debug.log "next" (List.map (Z.label >> prompt) next)
     in
         H.div []
@@ -364,16 +372,16 @@ view {focus, isCommitted} =
             , H.hr [] []
             , H.div [HA.style "display" "flex"]
                 [ H.div [HA.style "width" "50%"]
-                    [ H.text "Previous questions:"
-                    , prev
+                    [ H.text "Answered:"
+                    , done
                       |> List.map (\q -> H.li [] [viewLinkToQuestion q])
-                      |> H.ul [HA.style "width" "50%"]
+                      |> H.ul []
                     ]
                 , H.div [HA.style "width" "50%"]
-                    [ H.text "Upcoming questions:"
-                    , next
+                    [ H.text "Todo:"
+                    , todo
                       |> List.map (\q -> H.li [] [viewLinkToQuestion q])
-                      |> H.ul [HA.style "width" "50%"]
+                      |> H.ul []
                     ]
                 ]
             ]
@@ -390,11 +398,11 @@ summarizeAnswer node =
   case node of
     SelectManyNode data ->
       case data.checked of
-        Nothing -> "(TODO)"
+        Nothing -> ""
         Just checkedSet -> checkedSet |> Set.toList |> List.sort |> String.join ", "
     SelectOneNode data ->
       case data.selected of
-        Nothing -> "(TODO)"
+        Nothing -> ""
         Just selectedStr -> selectedStr
 
 shortcuts : List String -> Dict String Char
