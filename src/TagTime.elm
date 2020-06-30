@@ -13,11 +13,8 @@ module TagTime exposing
   , urPinger
   , meanGap
   , stepUntil
+  , isAfter
   )
-
-import Browser
-import Html
-import Html.Events
 
 import Time
 
@@ -99,8 +96,30 @@ fromTime : Time.Posix -> Pinger
 fromTime time =
   stepUntil time urPinger
 
+pingsUntil : Time.Posix -> Pinger -> ( List Time.Posix , Pinger )
+pingsUntil tf pinger =
+  let
+    withAccumulator : List Time.Posix -> Pinger -> ( List Time.Posix , Pinger )
+    withAccumulator res pinger_ =
+      let
+        (p, np) = nextPing pinger_
+      in
+        if p |> isAfter tf then
+          (res, np)
+        else
+          withAccumulator (p :: res) np
+
+    (reversedResult, pf) = withAccumulator [] pinger
+  in
+    (List.reverse reversedResult, pf)
 
 
+
+-- UTILITIES
+
+isAfter : Time.Posix -> Time.Posix -> Bool
+isAfter t1 t2 =
+  Time.posixToMillis t2 > Time.posixToMillis t1
 
 
 
@@ -134,29 +153,3 @@ List.Extra.unfoldr
 Tuple.first (nextPing <| stepUntil <| Time.millisToPosix 1184104776000) == Time.millisToPosix 1184105302000
 
 --}
-
-type alias Model = { pings : List Time.Posix, pinger : Pinger }
-
-main = Browser.sandbox { init=init, view=view, update=update }
-
-init : Model
-init = {pings=[], pinger=urPinger}
-
-view : Model -> Html.Html ()
-view {pings, pinger} = Html.div []
-  [ Html.button [Html.Events.onClick ()] [Html.text "step"]
-  , Html.text (Debug.toString pinger)
-  , Html.br [] []
-  , Html.text "Past pings:"
-  , pings
-    |> List.map (Time.posixToMillis >> (\x -> x//1000) >> String.fromInt >> Html.text >> List.singleton >> Html.li [])
-    |> Html.ul []
-  ]
-
-update : () -> Model -> Model
-update () model =
-  let (p, pr) = nextPing model.pinger in
-  { model
-  | pings = p :: model.pings
-  , pinger = pr
-  }
