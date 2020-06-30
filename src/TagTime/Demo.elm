@@ -10,63 +10,48 @@ import Time
 import TagTime exposing (Ping, isAfter)
 
 type alias Model =
-  { now : Time.Posix
-  , startingAt : Time.Posix
-  , timeZone : Time.Zone
+  { timeZone : Time.Zone
   , pings : List Ping
   }
 
 type Msg
-  = Tick Time.Posix
-  | SetZone Time.Zone
-  | Step
+  = SetZone Time.Zone
+  | GotPing Ping
 
 main = Browser.element
   { init = init
   , view = view
   , update = update
-  , subscriptions = (\_ -> Time.every 1000 Tick)
+  , subscriptions = (\_ -> Sub.none)
   }
 
 init : () -> ( Model , Cmd Msg )
 init () =
-  ( { now = Time.millisToPosix 0
-    , startingAt = Time.millisToPosix 0
-    , timeZone = Time.utc
+  ( { timeZone = Time.utc
     , pings = []
     }
   , Cmd.batch
-      [ Task.perform Tick Time.now
+      [ Time.now
+        |> Task.andThen
+          ( Time.posixToMillis
+            >> (\millis -> millis - 1000*3600*5)
+            >> Time.millisToPosix
+            >> TagTime.lastBefore
+            >> TagTime.waitForPing
+          )
+        |> Task.perform GotPing
       , Task.perform SetZone Time.here
       ]
   )
 
 view : Model -> Html.Html Msg
-view {startingAt, pings, now, timeZone} =
-  let
-    atLimit : Bool
-    atLimit =
-      List.head pings
-      |> Maybe.withDefault (TagTime.lastBefore startingAt)
-      |> TagTime.next
-      |> TagTime.toTime
-      |> isAfter now
-  in
-    Html.div []
-      [ Html.text <| "Pings since " ++ localTimeString timeZone startingAt ++ ": "
-      , Html.button
-          [ Html.Events.onClick Step
-          , Html.Attributes.disabled atLimit
-          ]
-          [ if atLimit then
-              Html.text "(refusing to go past current time...)"
-            else
-              Html.text "(more)"
-          ]
-      , pings
-        |> List.map (TagTime.toTime >> localTimeString timeZone >> Html.text >> List.singleton >> Html.li [])
-        |> Html.ul []
-      ]
+view {pings, timeZone} =
+  Html.div []
+    [ Html.text "Recent pings:"
+    , pings
+      |> List.map (TagTime.toTime >> localTimeString timeZone >> Html.text >> List.singleton >> Html.li [])
+      |> Html.ul []
+    ]
 
 localTimeString : Time.Zone -> Time.Posix -> String
 localTimeString zone time =
@@ -80,35 +65,13 @@ localTimeString zone time =
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
   case msg of
-    Tick now ->
-      ( if Time.posixToMillis (model.now) == 0 then
-          let
-            startingAt = Time.millisToPosix <| (\x -> x-1000*60*60*5) <| Time.posixToMillis now
-          in
-            { model
-            | now = now
-            , startingAt = startingAt
-            }
-        else
-          { model | now = now }
-      , Cmd.none
-      )
     SetZone zone ->
       ( { model | timeZone = zone }
       , Cmd.none
       )
-    Step ->
-      ( let
-          nextPing =
-            List.head model.pings
-            |> Maybe.withDefault (TagTime.lastBefore model.startingAt)
-            |> TagTime.next
-        in
-          if TagTime.toTime nextPing |> isAfter model.now then
-            model
-          else
-            { model
-            | pings = nextPing :: model.pings
-            }
-      , Cmd.none
+    GotPing ping ->
+      ( { model
+        | pings = ping :: model.pings
+        }
+      , Task.perform GotPing <| TagTime.waitForPing ping
       )
