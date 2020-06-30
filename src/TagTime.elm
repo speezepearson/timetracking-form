@@ -7,19 +7,22 @@ This module is written in a less-than-maximally Elm-like style in order to stay 
 --}
 
 module TagTime exposing
-  ( Pinger
-  , fromTime
-  , nextPing
-  , urPinger
+  ( Ping
+  , firstAfter
+  , lastBefore
+  , toTime
+  , next
+  , urPing
   , meanGap
-  , stepUntil
+  , advanceToLastBefore
+  , advanceToFirstAfter
   , isAfter
   )
 
 import Time
 
-urPinger : Pinger
-urPinger = Pinger
+urPing : Ping
+urPing = Ping
   { meanGap          = 45*60        -- Average gap between pings, in seconds
   , lastPingUnixTime = 1184097393   -- Ur-ping ie the birth of Timepie/TagTime! (unixtime)
   , lcg              = Lcg 11193462 -- Initial state of the random number generator
@@ -49,69 +52,72 @@ expRand scale lcg =
     (result, newLcg)
 
 
-type Pinger = Pinger
+type Ping = Ping
   { meanGap : Int
   , lastPingUnixTime : Int
   , lcg : Lcg
   }
 
+toTime : Ping -> Time.Posix
+toTime (Ping {lastPingUnixTime}) =
+  Time.millisToPosix <| lastPingUnixTime * 1000
 
-nextPing : Pinger -> (Time.Posix, Pinger)
-nextPing pinger =
+
+next : Ping -> Ping
+next ping =
   let
-    (Pinger internals) = pinger
-    (eRand, newLcg) = expRand (meanGap pinger |> toFloat) internals.lcg
+    (Ping internals) = ping
+    (eRand, newLcg) = expRand (meanGap ping |> toFloat) internals.lcg
     gap = max 1 (round eRand)
     resultUnixTime = internals.lastPingUnixTime + gap
   in
-    ( Time.millisToPosix (resultUnixTime*1000)
-    , Pinger { internals | lcg = newLcg , lastPingUnixTime = resultUnixTime }
-    )
+    Ping { internals | lcg = newLcg , lastPingUnixTime = resultUnixTime }
 
 
 -- equivalent of init() in the reference implementation
-stepUntil : Time.Posix -> Pinger -> Pinger
-stepUntil time pinger =
+advanceToLastBefore : Time.Posix -> Ping -> Ping
+advanceToLastBefore time ping =
   let
-    (next, steppedPinger) = nextPing pinger
+    ping_ = next ping
   in
-    if Time.posixToMillis next > Time.posixToMillis time then
-      pinger
+    if toTime ping_ |> isAfter time then
+      ping
     else
-      stepUntil time steppedPinger
+      advanceToLastBefore time ping_
 
-
+advanceToFirstAfter : Time.Posix -> Ping -> Ping
+advanceToFirstAfter t p =
+  advanceToLastBefore t p |> next
 
 -- EXTRA FUNCTIONS FOR MANIPULATING PINGERS
 
-lastPing : Pinger -> Time.Posix
-lastPing (Pinger {lastPingUnixTime}) =
-  Time.millisToPosix (lastPingUnixTime*1000)
-
-meanGap : Pinger -> Int
-meanGap (Pinger internals) =
+meanGap : Ping -> Int
+meanGap (Ping internals) =
   internals.meanGap
 
-fromTime : Time.Posix -> Pinger
-fromTime time =
-  stepUntil time urPinger
+lastBefore : Time.Posix -> Ping
+lastBefore time =
+  advanceToLastBefore time urPing
 
-pingsUntil : Time.Posix -> Pinger -> ( List Time.Posix , Pinger )
-pingsUntil tf pinger =
+firstAfter : Time.Posix -> Ping
+firstAfter time =
+  advanceToFirstAfter time urPing
+
+pingsUntil : Time.Posix -> Ping -> List Ping
+pingsUntil tf ping =
   let
-    withAccumulator : List Time.Posix -> Pinger -> ( List Time.Posix , Pinger )
-    withAccumulator res pinger_ =
+    withAccumulator : List Ping -> Ping -> List Ping
+    withAccumulator res ping_ =
       let
-        (p, np) = nextPing pinger_
+        np = next ping_
       in
-        if p |> isAfter tf then
-          (res, np)
+        if toTime np |> isAfter tf then
+          []
         else
-          withAccumulator (p :: res) np
-
-    (reversedResult, pf) = withAccumulator [] pinger
+          withAccumulator (np :: res) np
   in
-    (List.reverse reversedResult, pf)
+    withAccumulator [] ping
+    |> List.reverse
 
 
 
@@ -125,23 +131,22 @@ isAfter t1 t2 =
 
 -- DEBUGGING STUFF THAT I SHOULD PACKAGE INTO TESTS
 
-firstFewPings : List (Time.Posix)
+firstFewPings : List Ping
 firstFewPings =
   let
-    p0 = urPinger
-    (t1, p1) = nextPing p0
-    (t2, p2) = nextPing p1
-    (t3, p3) = nextPing p2
-    (t4, p4) = nextPing p3
-    (t5, p5) = nextPing p4
+    p0 = urPing
+    p1 = next p0
+    p2 = next p1
+    p3 = next p2
+    p4 = next p3
   in
-    [t1, t2, t3, t4, t5]
+    [p0, p1, p2, p3, p4]
 
 {-- TODO: tests
 
 List.Extra.unfoldr
-  (\p -> if (nextPing p |> Tuple.first |> Time.posixToMillis) > 1184105815000 then Nothing else Just (nextPing p))
-  urPinger
+  (\p -> if (next p |> Time.posixToMillis) > 1184105815000 then Nothing else Just (next p))
+  urPing
 == List.map (\sec -> Time.millisToPosix (sec*1000))
     [ 1184098754
     , 1184102685
@@ -150,6 +155,6 @@ List.Extra.unfoldr
     , 1184105815
     ]
 
-Tuple.first (nextPing <| stepUntil <| Time.millisToPosix 1184104776000) == Time.millisToPosix 1184105302000
+(next <| advanceToLastBefore <| Time.millisToPosix 1184104776000) == Time.millisToPosix 1184105302000
 
 --}

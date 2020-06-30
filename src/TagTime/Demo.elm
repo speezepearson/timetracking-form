@@ -7,14 +7,13 @@ import Html.Events
 import Task
 import Time
 
-import TagTime exposing (Pinger, isAfter)
+import TagTime exposing (Ping, isAfter)
 
 type alias Model =
   { now : Time.Posix
   , startingAt : Time.Posix
   , timeZone : Time.Zone
-  , pings : List Time.Posix
-  , pinger : Pinger
+  , pings : List Ping
   }
 
 type Msg
@@ -35,7 +34,6 @@ init () =
     , startingAt = Time.millisToPosix 0
     , timeZone = Time.utc
     , pings = []
-    , pinger = TagTime.urPinger
     }
   , Cmd.batch
       [ Task.perform Tick Time.now
@@ -44,9 +42,15 @@ init () =
   )
 
 view : Model -> Html.Html Msg
-view {startingAt, pings, pinger, now, timeZone} =
+view {startingAt, pings, now, timeZone} =
   let
-    atLimit = Tuple.first (TagTime.nextPing pinger) |> isAfter now
+    atLimit : Bool
+    atLimit =
+      List.head pings
+      |> Maybe.withDefault (TagTime.lastBefore startingAt)
+      |> TagTime.next
+      |> TagTime.toTime
+      |> isAfter now
   in
     Html.div []
       [ Html.text <| "Pings since " ++ localTimeString timeZone startingAt ++ ": "
@@ -60,7 +64,7 @@ view {startingAt, pings, pinger, now, timeZone} =
               Html.text "(more)"
           ]
       , pings
-        |> List.map (localTimeString timeZone >> Html.text >> List.singleton >> Html.li [])
+        |> List.map (TagTime.toTime >> localTimeString timeZone >> Html.text >> List.singleton >> Html.li [])
         |> Html.ul []
       ]
 
@@ -83,7 +87,6 @@ update msg model =
           in
             { model
             | now = now
-            , pinger = TagTime.fromTime startingAt
             , startingAt = startingAt
             }
         else
@@ -96,14 +99,16 @@ update msg model =
       )
     Step ->
       ( let
-          (p, np) = TagTime.nextPing model.pinger
+          nextPing =
+            List.head model.pings
+            |> Maybe.withDefault (TagTime.lastBefore model.startingAt)
+            |> TagTime.next
         in
-          if p |> isAfter model.now then
+          if TagTime.toTime nextPing |> isAfter model.now then
             model
           else
             { model
-            | pings = p :: model.pings
-            , pinger = np
+            | pings = nextPing :: model.pings
             }
       , Cmd.none
       )
