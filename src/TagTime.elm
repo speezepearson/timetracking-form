@@ -130,17 +130,20 @@ isAfter : Time.Posix -> Time.Posix -> Bool
 isAfter t1 t2 =
   Time.posixToMillis t2 > Time.posixToMillis t1
 
+sleepUntil : Time.Posix -> Time.Posix -> Task x ()
+sleepUntil tf now =
+  Time.posixToMillis tf - Time.posixToMillis now
+  |> toFloat
+  |> Process.sleep
+
 waitForPing : Ping -> Task x Ping
 waitForPing prevPing =
-  Time.now
-  |> Task.andThen (\now ->
-      let
-        nextPing = next prevPing
-        delayMillis = Time.posixToMillis (toTime nextPing) - Time.posixToMillis now
-      in
-        Process.sleep (toFloat delayMillis)
-        |> Task.map (always nextPing)
-    )
+  let
+    nextPing = next prevPing
+  in
+    Time.now
+    |> Task.andThen (sleepUntil <| toTime nextPing)
+    |> Task.map (always nextPing)
 
 
 
