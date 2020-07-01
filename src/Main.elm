@@ -25,6 +25,7 @@ type alias Tag = String
 type alias Model =
   { ping : TaggedPing
   , isCommitted : Bool
+  , omnibarContents : String
   }
 
 type alias TaggedPing =
@@ -114,32 +115,44 @@ relevanceDecoder =
 type Msg
     = Toggle Tag
     | Commit
+    | SetOmnibar String
+    | ExecuteOmnibar
     | Ignore
 
 init : () -> ( Model , Cmd Msg )
 init () =
   ( { ping = examplePing
     , isCommitted = True
+    , omnibarContents = ""
     }
-  , focusOnShortcuts
+  , focusOnOmnibar
   )
 
-focusOnShortcuts : Cmd Msg
-focusOnShortcuts =
+focusOnOmnibar : Cmd Msg
+focusOnOmnibar =
   Task.attempt
     (always Ignore)
-    (Browser.Dom.focus "shortcut-input")
+    (Browser.Dom.focus "omnibar")
 
 update : Msg -> Model -> ( Model , Cmd Msg)
 update msg model =
+    -- Debug.log (Debug.toString (msg, model)) <|
     case msg of
         Toggle tag ->
             ( { model
               | ping = model.ping |> toggle tag
               , isCommitted = False
               }
-            , focusOnShortcuts
+            , focusOnOmnibar
             )
+        SetOmnibar value ->
+            ( { model | omnibarContents = value }
+            , Cmd.none
+            )
+        ExecuteOmnibar ->
+            case omnibarCandidate model of
+              Nothing -> ( model , Cmd.none )
+              Just tag -> update (Toggle tag) { model | omnibarContents = "" }
         Commit ->
             ( { model | isCommitted = True }
             , Cmd.none -- TODO: implement persistence
@@ -147,45 +160,143 @@ update msg model =
         Ignore ->
             ( model , Cmd.none )
 
-view : Model -> Html Msg
-view {ping, isCommitted} =
-  H.div []
-    [ H.text <| "Ping for: " ++ localTimeString Time.utc (TagTime.toTime ping.ping)
-    , H.br [] []
-    , H.button
-      [ HE.onClick Commit
-      , HA.disabled isCommitted
-      ]
-      [ H.text "Commit" ]
-    , relevantQuestions ping
-      |> List.map (viewQuestion ping.selectedTags)
-      |> List.map (\h -> H.li [] [h])
-      |> H.ul []
-    , allTags ping
-      |> Set.toList
-      |> List.sort
-      |> List.map (\t -> viewTag (Set.member t ping.selectedTags) t)
-      |> H.div []
-    ]
+omnibarCandidate : Model -> Maybe String
+omnibarCandidate {ping, omnibarContents} =
+  if String.isEmpty omnibarContents then
+    Nothing
+  else
+    Set.toList (allTags ping)
+    |> List.sort
+    |> List.map (\s -> (matchQuality omnibarContents s, s))
+    |> List.maximum
+    |> Maybe.andThen (\(quality, match) -> if quality <= 0 then Nothing else Just match)
 
-viewQuestion : Set Tag -> Question -> Html Msg
-viewQuestion selectedTags question =
+matchQuality : String -> String -> Float
+matchQuality =
+  let
+    helper : {score:Float, streak:Int, midword:Bool} -> String -> String -> Float
+    helper state pattern candidate =
+      case (String.uncons pattern, String.uncons candidate) of
+        (Nothing, Nothing) ->
+          state.score
+        (_, Nothing) ->
+          0
+        (Nothing, _) ->
+          state.score - (String.length candidate |> toFloat)/(toFloat 1000)
+        (Just (p, pRest), Just (c, cRest)) ->
+          if p == c then
+            let beginningOfWord = not (state.midword && isLower c) in
+            helper
+              { state
+              | score = state.score + toFloat state.streak + (if beginningOfWord then 10 else 0) |> Debug.log (Debug.toString (state, pattern, candidate))
+              , midword = not <| Set.member c (Set.fromList <| String.toList "abcdefghijklmnopqrstuvwxyz")
+              , streak = state.streak + 1
+              }
+              pRest
+              cRest
+          else
+            helper
+              { state
+              | score = state.score
+              , midword = isLetter c
+              , streak = 0
+              }
+              pattern
+              cRest
+  in
+    helper { score = 0 , streak = 0 , midword = False}
+
+
+isLetter : Char -> Bool
+isLetter c =
+  Set.member c (Set.fromList <| String.toList "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+isLower : Char -> Bool
+isLower c =
+  Set.member c (Set.fromList <| String.toList "abcdefghijklmnopqrstuvwxyz")
+
+
+
+view : Model -> Html Msg
+view model =
+  let
+    {ping, isCommitted, omnibarContents} = model
+    candidate = omnibarCandidate model
+    -- _ = Debug.log "candidate" candidate
+
+    selectedTags = ping.selectedTags
+    unselectedTags = Set.diff (allTags ping) ping.selectedTags
+    candidates = case candidate of
+      Just c -> Set.singleton c
+      Nothing -> Set.empty
+
+    tagAttrs : Dict Tag (List (H.Attribute Msg))
+    tagAttrs =
+      Dict.empty
+      |> concatValues (candidates     |> Set.foldl (\t -> Dict.insert t [HA.style "outline" "2px dashed red"]) Dict.empty)
+      |> concatValues (selectedTags   |> Set.foldl (\t -> Dict.insert t [HA.style "background-color" "lightgreen"]) Dict.empty)
+      |> concatValues (unselectedTags |> Set.foldl (\t -> Dict.insert t [HA.style "background-color" "#eeeeee"]) Dict.empty)
+
+    -- _ = Debug.log "candidates" candidates
+    -- _ = Debug.log "tagAttrs" tagAttrs
+
+  in
+    H.div []
+      [ H.text <| "Ping for: " ++ localTimeString Time.utc (TagTime.toTime ping.ping)
+      , H.br [] []
+      , H.button
+        [ HE.onClick Commit
+        , HA.disabled isCommitted
+        ]
+        [ H.text "Commit" ]
+      , H.input
+          [ HA.id "omnibar"
+          , HA.value omnibarContents
+          , HE.onInput SetOmnibar
+          , HE.on "keydown"
+            <| JD.map2
+                (\ctrl keyCode -> Debug.log (Debug.toString (ctrl, keyCode)) <| case (ctrl, keyCode) of
+                  (False, 13) -> ExecuteOmnibar
+                  (True, 13) -> Commit
+                  _ -> Ignore
+                )
+                (JD.field "ctrlKey" JD.bool)
+                HE.keyCode
+          ]
+          []
+      , relevantQuestions ping
+        |> List.map (viewQuestion tagAttrs ping.selectedTags)
+        |> List.map (\h -> H.li [] [h])
+        |> H.ul []
+      , allTags ping
+        |> Set.toList
+        |> List.sort
+        |> List.map (viewTag tagAttrs)
+        |> H.div []
+      ]
+
+concatValues : Dict comparable (List a) -> Dict comparable (List a) -> Dict comparable (List a)
+concatValues prefixes =
+  Dict.foldl
+    (\k v -> Dict.update k (Maybe.withDefault [] >> (++) v >> Just))
+    prefixes
+
+viewQuestion : Dict Tag (List (H.Attribute Msg)) -> Set Tag -> Question -> Html Msg
+viewQuestion tagAttrs selectedTags question =
   H.div []
     [ H.text question.prompt
     , H.text " "
     , question.responses
-      |> List.map (\tag -> viewTag (Set.member tag selectedTags) tag)
+      |> List.map (viewTag tagAttrs)
       |> List.intersperse (H.text " ")
       |> H.span []
     ]
 
-viewTag : Bool -> Tag -> Html Msg
-viewTag selected tag =
+viewTag : Dict Tag (List (H.Attribute Msg)) -> Tag -> Html Msg
+viewTag attrs tag =
   H.button
-    [ HE.onClick (Toggle tag)
-    , HA.style "background-color" (if selected then "lightgreen" else "#eeeeee")
-    ]
+    (HE.onClick (Toggle tag) :: (Dict.get tag attrs |> Maybe.withDefault []))
     [ H.text tag ]
+
 
 localTimeString : Time.Zone -> Time.Posix -> String
 localTimeString zone time =
