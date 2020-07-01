@@ -18,14 +18,18 @@ import Dict exposing (Dict)
 import Set exposing (Set)
 
 import TagTime exposing (Ping)
+import FocusedList as FL exposing (FocusedList)
 
 type alias Tag = String
 
+type MetaModel
+  = Initializing
+  | Initialized Model
 
 type alias Model =
-  { ping : TaggedPing
-  , isCommitted : Bool
+  { pings : FocusedList TaggedPing
   , omnibarContents : String
+  , timeZone : Time.Zone
   }
 
 type alias TaggedPing =
@@ -33,6 +37,7 @@ type alias TaggedPing =
   , miscTags : Set Tag
   , ping : Ping
   , selectedTags : Set Tag
+  , isCommitted : Bool
   }
 
 type alias Question =
@@ -80,6 +85,14 @@ toggle tag ping =
       |> (if Set.member tag ping.selectedTags then Set.remove else Set.insert) tag
   }
 
+markCommitted : TaggedPing -> TaggedPing
+markCommitted ping =
+  { ping | isCommitted = True }
+
+markUncommitted : TaggedPing -> TaggedPing
+markUncommitted ping =
+  { ping | isCommitted = False }
+
 
 -- SERDE
 
@@ -114,19 +127,68 @@ relevanceDecoder =
 
 type Msg
     = Toggle Tag
+    | Initialize Time.Zone Time.Posix
     | Commit
+    | Later
+    | Earlier
     | SetOmnibar String
     | ExecuteOmnibar
+    | GotPing Ping
     | Ignore
 
-init : () -> ( Model , Cmd Msg )
-init () =
-  ( { ping = examplePing
-    , isCommitted = True
-    , omnibarContents = ""
+main = Browser.element
+    { init = metaInit
+    , view = metaView
+    , update = metaUpdate
+    , subscriptions = (\_ -> Sub.none)
     }
-  , focusOnOmnibar
+
+metaInit : () -> ( MetaModel , Cmd Msg )
+metaInit () =
+  ( Initializing
+  , Cmd.batch
+      [ Task.perform identity
+        <| Task.map2 Initialize Time.here Time.now
+      ]
   )
+
+metaView : MetaModel -> Html Msg
+metaView metamodel =
+  case metamodel of
+    Initializing -> H.text "Initializing..."
+    Initialized model -> view model
+
+metaUpdate : Msg -> MetaModel -> ( MetaModel , Cmd Msg )
+metaUpdate msg metamodel =
+  case metamodel of
+    Initializing ->
+      case msg of
+        Initialize here now ->
+          init here now
+          |> Tuple.mapFirst Initialized
+        _ ->
+          ( metamodel |> Debug.log ("uninitialized; ignoring " ++ Debug.toString msg)
+          , Cmd.none
+          )
+    Initialized model ->
+      update msg model
+      |> Tuple.mapFirst Initialized
+
+
+init : Time.Zone -> Time.Posix -> ( Model , Cmd Msg )
+init here now =
+  let
+    ttPing = TagTime.lastBefore (now |> Time.posixToMillis |> (\x -> x - 1000*3600*5) |> Time.millisToPosix)
+  in
+    ( { pings = FocusedList [] {examplePing | ping = ttPing} []
+      , omnibarContents = ""
+      , timeZone = here
+      }
+    , Cmd.batch
+        [ Task.perform GotPing (TagTime.waitForPing ttPing)
+        , focusOnOmnibar
+        ]
+    )
 
 focusOnOmnibar : Cmd Msg
 focusOnOmnibar =
@@ -134,14 +196,12 @@ focusOnOmnibar =
     (always Ignore)
     (Browser.Dom.focus "omnibar")
 
-update : Msg -> Model -> ( Model , Cmd Msg)
+update : Msg -> Model -> ( Model , Cmd Msg )
 update msg model =
-    -- Debug.log (Debug.toString (msg, model)) <|
     case msg of
         Toggle tag ->
             ( { model
-              | ping = model.ping |> toggle tag
-              , isCommitted = False
+              | pings = model.pings |> FL.updateFocus (toggle tag >> markUncommitted)
               }
             , focusOnOmnibar
             )
@@ -154,18 +214,35 @@ update msg model =
               Nothing -> ( model , Cmd.none )
               Just tag -> update (Toggle tag) { model | omnibarContents = "" }
         Commit ->
-            ( { model | isCommitted = True }
+            ( { model | pings = model.pings |> FL.updateFocus markCommitted }
             , Cmd.none -- TODO: implement persistence
+            )
+        Later ->
+            ( { model | pings = FL.stepLeft model.pings |> Maybe.withDefault model.pings }
+            , Cmd.none
+            )
+        Earlier ->
+            ( { model | pings = FL.stepRight model.pings |> Maybe.withDefault model.pings }
+            , Cmd.none
+            )
+        GotPing ttPing ->
+            ( { model | pings = model.pings |> FL.concatLeft [FL.head model.pings |> (\p -> {p | ping = ttPing})] }
+            , Task.perform GotPing (TagTime.waitForPing ttPing)
             )
         Ignore ->
             ( model , Cmd.none )
 
+        Initialize _ _ ->
+            ( model |> Debug.log ("already initialized; ignoring " ++ Debug.toString msg)
+            , Cmd.none
+            )
+
 omnibarCandidate : Model -> Maybe String
-omnibarCandidate {ping, omnibarContents} =
+omnibarCandidate {pings, omnibarContents} =
   if String.isEmpty omnibarContents then
     Nothing
   else
-    Set.toList (allTags ping)
+    Set.toList (allTags pings.focus)
     |> List.sort
     |> List.map (\s -> (matchQuality omnibarContents s, s))
     |> List.maximum
@@ -219,12 +296,14 @@ isLower c =
 view : Model -> Html Msg
 view model =
   let
-    {ping, isCommitted, omnibarContents} = model
+    {pings, omnibarContents} = model
     candidate = omnibarCandidate model
     -- _ = Debug.log "candidate" candidate
 
-    selectedTags = ping.selectedTags
-    unselectedTags = Set.diff (allTags ping) ping.selectedTags
+    focus = pings.focus
+
+    selectedTags = focus.selectedTags
+    unselectedTags = Set.diff (allTags focus) focus.selectedTags
     candidates = case candidate of
       Just c -> Set.singleton c
       Nothing -> Set.empty
@@ -241,37 +320,51 @@ view model =
 
   in
     H.div []
-      [ H.text <| "Ping for: " ++ localTimeString Time.utc (TagTime.toTime ping.ping)
-      , H.br [] []
-      , H.button
-        [ HE.onClick Commit
-        , HA.disabled isCommitted
-        ]
-        [ H.text "Commit" ]
-      , H.input
+      [ H.input
           [ HA.id "omnibar"
           , HA.value omnibarContents
           , HE.onInput SetOmnibar
           , HE.on "keydown"
-            <| JD.map2
-                (\ctrl keyCode -> Debug.log (Debug.toString (ctrl, keyCode)) <| case (ctrl, keyCode) of
-                  (False, 13) -> ExecuteOmnibar
-                  (True, 13) -> Commit
+            <| JD.map3
+                (\ctrl key keyCode -> case (ctrl, key, keyCode) of
+                  (False, _, 13) -> ExecuteOmnibar
+                  (True, _, 13) -> Commit
+                  (False, "ArrowUp", _) -> Later
+                  (False, "ArrowDown", _) -> Earlier
                   _ -> Ignore
                 )
                 (JD.field "ctrlKey" JD.bool)
+                (JD.field "key" JD.string)
                 HE.keyCode
           ]
           []
-      , relevantQuestions ping
-        |> List.map (viewQuestion tagAttrs ping.selectedTags)
+      , H.div []
+          ( pings.left
+            |> List.reverse
+            |> List.map (.ping >> TagTime.toTime >> (\t -> "(" ++ localTimeString Time.utc t ++ " UTC) ") >> H.text >> List.singleton >> H.div [])
+          )
+      , H.hr [] []
+      , H.button
+        [ HE.onClick Commit
+        , HA.disabled focus.isCommitted
+        ]
+        [ H.text "Commit" ]
+      , H.text <| "Ping for: " ++ localTimeString Time.utc (TagTime.toTime focus.ping) ++ " UTC"
+      , H.br [] []
+      , relevantQuestions focus
+        |> List.map (viewQuestion tagAttrs focus.selectedTags)
         |> List.map (\h -> H.li [] [h])
         |> H.ul []
-      , allTags ping
+      , allTags focus
         |> Set.toList
         |> List.sort
         |> List.map (viewTag tagAttrs)
         |> H.div []
+      , H.hr [] []
+      , H.div []
+          ( pings.right
+            |> List.map (.ping >> TagTime.toTime >> (\t -> "(" ++ localTimeString Time.utc t ++ " UTC) ") >> H.text >> List.singleton >> H.div [])
+          )
       ]
 
 concatValues : Dict comparable (List a) -> Dict comparable (List a) -> Dict comparable (List a)
@@ -307,13 +400,6 @@ localTimeString zone time =
   ++ ":" ++ (String.pad 2 '0' <| String.fromInt <| Time.toMinute zone time)
   ++ ":" ++ (String.pad 2 '0' <| String.fromInt <| Time.toSecond zone time)
 
-main = Browser.element
-    { init = init
-    , view = view
-    , update = update
-    , subscriptions = (\_ -> Sub.none)
-    }
-
 
 
 
@@ -341,4 +427,5 @@ examplePing =
       ]
   , miscTags = Set.fromList ["miscTag1", "miscTag2"]
   , selectedTags = Set.empty
+  , isCommitted = True
   }
