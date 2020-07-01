@@ -33,10 +33,10 @@ init () =
   , Cmd.batch
       [ Time.now
         |> Task.andThen
-          ( Time.posixToMillis
-            >> (\millis -> millis - 1000*3600*5)
-            >> Time.millisToPosix
-            >> TagTime.lastBefore
+          ( TagTime.lastBefore
+            >> TagTime.prev
+            >> TagTime.prev
+            >> TagTime.prev
             >> TagTime.waitForPing
           )
         |> Task.perform GotPing

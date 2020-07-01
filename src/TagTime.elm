@@ -12,6 +12,7 @@ module TagTime exposing
   , lastBefore
   , toTime
   , next
+  , prev
   , urPing
   , meanGap
   , advanceToLastBefore
@@ -35,7 +36,9 @@ urPing = Ping
 -- like this one in 2018 -- URPING = 1532992625, SEED = 75570 -- without
 -- deviating from the universal ping schedule.
 
+ia : Int
 ia = 16807          -- =7^5: Multiplier for LCG random number generator
+im : Int
 im = 2147483647     -- =2^31-1: Modulus used for the RNG
 
 type Lcg = Lcg Int
@@ -54,6 +57,13 @@ expRand scale lcg =
   in
     (result, newLcg)
 
+nextGap : Int -> Lcg -> (Int, Lcg)
+nextGap mean lcg =
+  let
+    (eRand, newLcg) = expRand (toFloat mean) lcg
+  in
+    (max 1 (round eRand), newLcg)
+
 
 type Ping = Ping
   { meanGap : Int
@@ -70,12 +80,41 @@ next : Ping -> Ping
 next ping =
   let
     (Ping internals) = ping
-    (eRand, newLcg) = expRand (meanGap ping |> toFloat) internals.lcg
-    gap = max 1 (round eRand)
+    (gap, newLcg) = nextGap internals.meanGap internals.lcg
     resultUnixTime = internals.lastPingUnixTime + gap
   in
     Ping { internals | lcg = newLcg , lastPingUnixTime = resultUnixTime }
 
+
+-- GOING BACKWARDS
+
+iaInvFactors : ( Int , Int )
+iaInvFactors = ( 33625 , 41864 )
+-- Multiplicative inverse of ia; used to step backward.
+-- But ia * seed * iaInv can result in... some weird overflow error.
+-- So we store the inverse in two parts, and mod by im in between the multiplications.
+-- let (x,y) = iaInvFactors in (x*y*ia |> modBy im) == 1
+
+retreat : Lcg -> Lcg
+retreat (Lcg seed) =
+  let
+    (x, y) = iaInvFactors
+  in
+    seed*x
+    |> modBy im
+    |> (*) y
+    |> modBy im
+    |> Lcg
+
+prev : Ping -> Ping
+prev ping =
+  let
+    (Ping internals) = ping
+    prevLcg = retreat internals.lcg
+    (prevGap, _) = nextGap internals.meanGap prevLcg
+    resultUnixTime = internals.lastPingUnixTime - prevGap
+  in
+    Ping { internals | lcg = prevLcg , lastPingUnixTime = resultUnixTime }
 
 -- equivalent of init() in the reference implementation
 advanceToLastBefore : Time.Posix -> Ping -> Ping
