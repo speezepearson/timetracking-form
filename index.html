@@ -1,0 +1,60 @@
+<html>
+<head>
+  <script src="dist/Main.js"></script>
+</head>
+<body>
+  <main></main>
+  <script>
+    var app = Elm.Main.init({ node: document.querySelector('main') });
+
+    if (Notification.permission == "default") {
+      (function() {
+        function requestPermission() {
+          Notification.requestPermission().then(permission => {
+            if (permission == "granted") {
+              notify("Notifications enabled!");
+            }
+          });
+          window.removeEventListener("click", requestPermission);
+          window.removeEventListener("keydown", requestPermission);
+        }
+        window.addEventListener("click", requestPermission);
+        window.addEventListener("keydown", requestPermission);
+      })();
+    }
+
+    function notify(title, options) {
+      if (Notification.permission == "granted") {
+        var notification = new Notification(title, options);
+        notification.onclick = function() {
+          console.log("notification clicked");
+          try {window.focus()} catch (e) {}
+          try {parent.focus()} catch (e) {}
+          parent.focus();
+          notification.close();
+        };
+      }
+    }
+
+    var batch = [];
+    var notificationTimeoutId = null;
+    app.ports.ping.subscribe(message => {
+      batch.push(message);
+      clearTimeout(notificationTimeoutId);
+      notificationTimeoutId = setTimeout(
+        () => {
+          notify(
+            "Ping!",
+            {
+              body : batch.length == 1 ? batch[0] : `${batch.length} pings: (${batch[0]})...(${batch[batch.length-1]})`,
+            },
+          );
+          batch = [];
+          notificationTimeoutId = null;
+        },
+        300,
+      )
+    })
+  </script>
+</body>
+</html>

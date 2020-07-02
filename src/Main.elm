@@ -17,6 +17,7 @@ import Http
 import Dict exposing (Dict)
 import Set exposing (Set)
 
+import Ports
 import TagTime exposing (Ping)
 
 type alias Tag = String
@@ -225,7 +226,10 @@ update msg model =
                 }
               else
                 { model | mostRecentPing = ttPing }
-            , Task.perform GotPing (TagTime.waitForPing ttPing)
+            , Cmd.batch
+                [ Task.perform GotPing (TagTime.waitForPing ttPing)
+                , Ports.ping <| localTimeString model.timeZone <| TagTime.toTime ttPing
+                ]
             )
         Earlier ->
             ( { model
