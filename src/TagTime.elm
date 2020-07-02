@@ -45,7 +45,7 @@ type Lcg = Lcg Int
 stepLcg : Lcg -> (Int, Lcg)
 stepLcg (Lcg seed) =
   let
-    newSeed = (ia * seed) |> modBy im
+    newSeed = mulModIm ia seed
   in
     (newSeed, Lcg newSeed)
 
@@ -88,23 +88,11 @@ next ping =
 
 -- GOING BACKWARDS
 
-iaInvFactors : ( Int , Int )
-iaInvFactors = ( 33625 , 41864 )
--- Multiplicative inverse of ia; used to step backward.
--- But ia * seed * iaInv can result in... some weird overflow error.
--- So we store the inverse in two parts, and mod by im in between the multiplications.
--- let (x,y) = iaInvFactors in (x*y*ia |> modBy im) == 1
+iaInv = 1407677000  -- Multiplicative inverse of ia; used to step backward.
 
 retreat : Lcg -> Lcg
 retreat (Lcg seed) =
-  let
-    (x, y) = iaInvFactors
-  in
-    seed*x
-    |> modBy im
-    |> (*) y
-    |> modBy im
-    |> Lcg
+  Lcg <| mulModIm seed iaInv
 
 prev : Ping -> Ping
 prev ping =
@@ -164,6 +152,48 @@ pingsUntil tf ping =
 
 
 -- UTILITIES
+
+
+-- Elm's Int arithmetic is quirky for numbers above 2^32.
+-- This means we can't use normal multiplication for elements of the modular field:
+--   we need a special algorithm that carefully avoids ever going outside the interval [-2^32, 2^32).
+-- This implementation is adapted from Stack Overflow's inimitable "Matt":
+-- https://stackoverflow.com/questions/21030153/modulo-of-multiplication-of-large-numbers/21032389#21032389
+mulModIm : Int -> Int -> Int
+mulModIm =
+  let
+
+    addModIm : Int -> Int -> Int
+    addModIm x y =
+      let
+        z = x - im + y
+      in
+        if z < 0 then
+          z + im
+        else
+          z
+
+    tailRecurse : Int -> Int -> Int -> Int
+    tailRecurse product x y =
+      let
+        smallX = x |> modBy im
+        smallY = y |> modBy im
+        a = min x y
+        b = max x y
+      in
+        if a == 0 then
+          product
+        else
+          tailRecurse
+            ( if (a |> modBy 2) == 1 then
+                addModIm product b
+              else
+                product
+            )
+            (a // 2)
+            (addModIm b b)
+  in
+    tailRecurse 0
 
 isAfter : Time.Posix -> Time.Posix -> Bool
 isAfter t1 t2 =
